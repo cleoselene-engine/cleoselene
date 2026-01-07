@@ -60,6 +60,10 @@ struct Cli {
     #[arg(long)]
     export_client: Option<PathBuf>,
 
+    /// Use a custom client directory instead of embedded assets
+    #[arg(long)]
+    client: Option<PathBuf>,
+
     /// Enable the debug endpoint at /debug. 
     /// Accepts POST requests with Lua code and returns the evaluation result.
     #[arg(long)]
@@ -85,6 +89,7 @@ struct AppState {
     assets_dir: PathBuf,
     instance_id: String,
     tx_debug: Option<mpsc::Sender<(String, oneshot::Sender<String>)>>,
+    custom_client_dir: Option<PathBuf>,  // Custom client directory (--client)
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -178,6 +183,12 @@ async fn main() {
     // Determine assets dir (parent of script)
     let assets_dir = args.script_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     
+    // Custom client directory handling
+    let custom_client_dir = args.client.clone();
+    if let Some(ref client_dir) = custom_client_dir {
+        println!("Using custom client: {:?}", client_dir);
+    }
+    
     // Generate unique ID for this server process run
     let instance_id = Uuid::new_v4().to_string();
     println!("Server Instance ID: {}", instance_id);
@@ -188,17 +199,31 @@ async fn main() {
         assets_dir: assets_dir.clone(),
         instance_id,
         tx_debug,
+        custom_client_dir: custom_client_dir.clone(),
     });
 
-    let app = Router::new()
-        .route("/ws", get(ws_handler))
-        .route("/debug", post(debug_handler))
-        .route("/", get(serve_index))
-        .route("/index.html", get(serve_index))
-        .nest_service("/assets", ServeDir::new(assets_dir))
-        .fallback(static_handler)
-        .layer(TraceLayer::new_for_http())
-        .with_state(app_state);
+    // Build router based on whether custom client is used
+    let app = if let Some(ref client_dir) = custom_client_dir {
+        // Serve from custom client directory
+        Router::new()
+            .route("/ws", get(ws_handler))
+            .route("/debug", post(debug_handler))
+            .nest_service("/assets", ServeDir::new(assets_dir))
+            .fallback_service(ServeDir::new(client_dir).append_index_html_on_directories(true))
+            .layer(TraceLayer::new_for_http())
+            .with_state(app_state)
+    } else {
+        // Serve from embedded assets
+        Router::new()
+            .route("/ws", get(ws_handler))
+            .route("/debug", post(debug_handler))
+            .route("/", get(serve_index))
+            .route("/index.html", get(serve_index))
+            .nest_service("/assets", ServeDir::new(assets_dir))
+            .fallback(static_handler)
+            .layer(TraceLayer::new_for_http())
+            .with_state(app_state)
+    };
 
     let addr = format!("0.0.0.0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
