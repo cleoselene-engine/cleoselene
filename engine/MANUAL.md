@@ -134,3 +134,34 @@ Native A* implementation on a custom graph.
 | `nav:add_node(id, x, y)` | Adds a node to the graph. |
 | `nav:add_edge(u, v)` | Adds an edge (connection) between nodes. |
 | `nav:find_path(start, end)` | Returns a list of node IDs forming the shortest path. |
+
+### HTTP & JSON
+
+Make HTTP requests and handle JSON data.
+
+| Method | Description |
+| :--- | :--- |
+| `api.http_get(url)` | Makes a GET request. Returns `(body, error)`. |
+| `api.http_post(url, body)` | Makes a POST request with JSON body. Returns `(body, error)`. |
+| `api.json_decode(str)` | Parses JSON string to Lua table. Returns `(table, error)`. |
+| `api.json_encode(table)` | Encodes Lua table to JSON string. Returns `(string, error)`. |
+
+#### Example: LLM API Call
+```lua
+local response, err = api.http_post("http://localhost:8888/v1/chat/completions", {
+    model = "gpt-3.5-turbo",
+    messages = {
+        { role = "user", content = "Hello!" }
+    },
+    max_tokens = 100
+})
+
+if err then
+    print("Error: " .. err)
+else
+    local data, parse_err = api.json_decode(response)
+    if data and data.choices and data.choices[1] then
+        print("Response: " .. data.choices[1].message.content)
+    end
+end
+```

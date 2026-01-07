@@ -422,6 +422,59 @@ impl GameState {
                 Ok(GraphWrapper(Arc::new(Mutex::new(graph))))
             })?)?;
 
+            // HTTP GET - returns (body, error) tuple
+            api.set("http_get", lua.create_function(move |_, url: String| {
+                match ureq::get(&url).call() {
+                    Ok(resp) => {
+                        match resp.into_string() {
+                            Ok(body) => Ok((Some(body), None::<String>)),
+                            Err(e) => Ok((None::<String>, Some(format!("Read error: {}", e)))),
+                        }
+                    }
+                    Err(e) => Ok((None::<String>, Some(format!("Request error: {}", e)))),
+                }
+            })?)?;
+
+            // HTTP POST with JSON body - returns (body, error) tuple
+            api.set("http_post", lua.create_function(move |lua_ctx, (url, body): (String, mlua::Value)| {
+                // Convert Lua value to JSON string
+                let json_body: serde_json::Value = lua_ctx.from_value(body)?;
+                let json_str = serde_json::to_string(&json_body).unwrap_or_default();
+                
+                match ureq::post(&url)
+                    .set("Content-Type", "application/json")
+                    .send_string(&json_str) 
+                {
+                    Ok(resp) => {
+                        match resp.into_string() {
+                            Ok(body) => Ok((Some(body), None::<String>)),
+                            Err(e) => Ok((None::<String>, Some(format!("Read error: {}", e)))),
+                        }
+                    }
+                    Err(e) => Ok((None::<String>, Some(format!("Request error: {}", e)))),
+                }
+            })?)?;
+
+            // JSON parse helper - converts JSON string to Lua table
+            api.set("json_decode", lua.create_function(move |lua_ctx, json_str: String| {
+                match serde_json::from_str::<serde_json::Value>(&json_str) {
+                    Ok(val) => {
+                        let lua_val = lua_ctx.to_value(&val)?;
+                        Ok((Some(lua_val), None::<String>))
+                    }
+                    Err(e) => Ok((None::<mlua::Value>, Some(format!("JSON parse error: {}", e)))),
+                }
+            })?)?;
+
+            // JSON encode helper - converts Lua table to JSON string
+            api.set("json_encode", lua.create_function(move |lua_ctx, val: mlua::Value| {
+                let json_val: serde_json::Value = lua_ctx.from_value(val)?;
+                match serde_json::to_string(&json_val) {
+                    Ok(s) => Ok((Some(s), None::<String>)),
+                    Err(e) => Ok((None::<String>, Some(format!("JSON encode error: {}", e)))),
+                }
+            })?)?;
+
             globals.set("api", api)?;
 
             // Load the game script
