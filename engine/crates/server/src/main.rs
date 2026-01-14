@@ -606,6 +606,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
         use std::io::Write;
 
         while let Some(bytes) = rx_render.recv().await {
+            // println!("Sending frame: {} bytes", bytes.len());
             // Compress with Zstd (Standard, Level 0)
             let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 0).unwrap();
             

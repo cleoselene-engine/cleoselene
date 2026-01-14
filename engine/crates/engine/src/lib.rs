@@ -20,6 +20,8 @@ const OP_LOAD_SOUND: u8 = 0x06;
 const OP_PLAY_SOUND: u8 = 0x07;
 const OP_STOP_SOUND: u8 = 0x08;
 const OP_SET_VOLUME: u8 = 0x09;
+const OP_LOAD_IMAGE: u8 = 0x0A;
+const OP_DRAW_IMAGE: u8 = 0x0B;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum GameMode {
@@ -184,7 +186,7 @@ impl CommandBuffer {
 
     pub fn get_bytes(&self) -> Bytes {
         let data = self.data.lock().unwrap();
-        data.clone().freeze()
+        Bytes::copy_from_slice(&data)
     }
 
     // --- Primitive Writers ---
@@ -275,6 +277,45 @@ impl CommandBuffer {
         data.put_u16_le(name_bytes.len() as u16);
         data.put_slice(name_bytes);
         data.put_f32_le(volume);
+    }
+
+    fn cmd_load_image(&self, name: &str, url: &str) {
+        let mut data = self.data.lock().unwrap();
+        data.put_u8(OP_LOAD_IMAGE);
+        
+        let name_bytes = name.as_bytes();
+        data.put_u16_le(name_bytes.len() as u16);
+        data.put_slice(name_bytes);
+
+        let url_bytes = url.as_bytes();
+        data.put_u16_le(url_bytes.len() as u16);
+        data.put_slice(url_bytes);
+    }
+
+    fn cmd_draw_image(&self, name: &str, x: f32, y: f32, w: Option<f32>, h: Option<f32>, sx: Option<f32>, sy: Option<f32>, sw: Option<f32>, sh: Option<f32>, r: Option<f32>, ox: Option<f32>, oy: Option<f32>) {
+        let mut data = self.data.lock().unwrap();
+        data.put_u8(OP_DRAW_IMAGE);
+        
+        let name_bytes = name.as_bytes();
+        data.put_u16_le(name_bytes.len() as u16);
+        data.put_slice(name_bytes);
+        
+        // Dest Rect
+        data.put_f32_le(x);
+        data.put_f32_le(y);
+        data.put_f32_le(w.unwrap_or(-1.0)); // -1.0 means use original size
+        data.put_f32_le(h.unwrap_or(-1.0));
+
+        // Source Rect (Sprite Sheet support)
+        data.put_f32_le(sx.unwrap_or(0.0));
+        data.put_f32_le(sy.unwrap_or(0.0));
+        data.put_f32_le(sw.unwrap_or(-1.0)); // -1.0 means full width
+        data.put_f32_le(sh.unwrap_or(-1.0));
+        
+        // Rotation & Origin (Optional)
+        data.put_f32_le(r.unwrap_or(0.0));
+        data.put_f32_le(ox.unwrap_or(0.0)); // Origin X relative to Dest X (0.0 = top-left, 0.5 = center of w)
+        data.put_f32_le(oy.unwrap_or(0.0));
     }
 
     pub fn append(&self, other: &CommandBuffer) {
@@ -403,6 +444,19 @@ impl GameState {
                     GameMode::Update => event_buf.cmd_set_volume(&name, vol),
                     GameMode::Draw => cmd_buf.cmd_set_volume(&name, vol),
                 }
+                Ok(())
+            })?)?;
+
+            let buf_clone = command_buffer.clone();
+            api.set("load_image", lua.create_function(move |_, (name, url): (String, String)| {
+                buf_clone.cmd_load_image(&name, &url);
+                Ok(())
+            })?)?;
+
+            let buf_clone = command_buffer.clone();
+            // api.draw_image(name, x, y, [w, h, sx, sy, sw, sh, r, ox, oy])
+            api.set("draw_image", lua.create_function(move |_, (name, x, y, w, h, sx, sy, sw, sh, r, ox, oy): (String, f32, f32, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>)| {
+                buf_clone.cmd_draw_image(&name, x, y, w, h, sx, sy, sw, sh, r, ox, oy);
                 Ok(())
             })?)?;
 

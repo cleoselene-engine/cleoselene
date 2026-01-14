@@ -10,6 +10,8 @@ const OP_LOAD_SOUND = 0x06;
 const OP_PLAY_SOUND = 0x07;
 const OP_STOP_SOUND = 0x08;
 const OP_SET_VOLUME = 0x09;
+const OP_LOAD_IMAGE = 0x0A;
+const OP_DRAW_IMAGE = 0x0B;
 
 // Global State
 let ctx = null;
@@ -18,6 +20,7 @@ let pc = null;
 let dc = null;
 let audioCtx = null;
 const sounds = {};
+const images = {};
 const activeSources = {};
 let sessionId = null;
 let gameStarted = false;
@@ -387,6 +390,66 @@ function renderFrame(view) {
             const active = activeSources[name];
             if (active && audioCtx) {
                 try { active.gain.gain.setTargetAtTime(volume, audioCtx.currentTime, 0.1); } catch(e) {}
+            }
+        }
+        else if (opcode === OP_LOAD_IMAGE) {
+            const nameLen = view.getUint16(offset, true); offset += 2;
+            const name = new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset + offset, nameLen)); offset += nameLen;
+            const urlLen = view.getUint16(offset, true); offset += 2;
+            let url = new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset + offset, urlLen)); offset += urlLen;
+            
+            if (url.startsWith('/') && !url.startsWith('//')) {
+                const bp = getBasePath();
+                if (bp && !url.startsWith(bp)) {
+                    url = bp + url;
+                }
+            }
+
+            if (!images[name]) {
+                images[name] = "loading";
+                fetch(url)
+                    .then(r => r.blob())
+                    .then(blob => createImageBitmap(blob))
+                    .then(bmp => { images[name] = bmp; })
+                    .catch(e => console.error("Image load failed:", name, e));
+            }
+        }
+        else if (opcode === OP_DRAW_IMAGE) {
+            const nameLen = view.getUint16(offset, true); offset += 2;
+            const name = new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset + offset, nameLen)); offset += nameLen;
+            
+            const dx = view.getFloat32(offset, true); offset += 4;
+            const dy = view.getFloat32(offset, true); offset += 4;
+            const dw = view.getFloat32(offset, true); offset += 4;
+            const dh = view.getFloat32(offset, true); offset += 4;
+            
+            const sx = view.getFloat32(offset, true); offset += 4;
+            const sy = view.getFloat32(offset, true); offset += 4;
+            const sw = view.getFloat32(offset, true); offset += 4;
+            const sh = view.getFloat32(offset, true); offset += 4;
+            
+            const rot = view.getFloat32(offset, true); offset += 4;
+            const ox = view.getFloat32(offset, true); offset += 4;
+            const oy = view.getFloat32(offset, true); offset += 4;
+
+            const img = images[name];
+            if (img && typeof img !== "string") {
+                let finalW = (dw !== -1) ? dw : img.width;
+                const finalH = (dh !== -1) ? dh : img.height;
+                const finalSW = (sw !== -1) ? sw : img.width;
+                const finalSH = (sh !== -1) ? sh : img.height;
+                
+                ctx.save();
+                ctx.translate(dx, dy);
+                if (rot !== 0) ctx.rotate(rot);
+                
+                if (finalW < 0) {
+                    ctx.scale(-1, 1);
+                    finalW = -finalW; // Make positive for drawImage
+                }
+                
+                ctx.drawImage(img, sx, sy, finalSW, finalSH, -ox, -oy, finalW, finalH);
+                ctx.restore();
             }
         }
         else { break; }

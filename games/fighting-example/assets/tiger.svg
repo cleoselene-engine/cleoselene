@@ -1,0 +1,33 @@
+<svg width="128" height="64" xmlns="http://www.w3.org/2000/svg">
+  <!-- Idle Frame (0) -->
+  <g transform="translate(0,0)">
+    <rect x="10" y="10" width="12" height="22" fill="#FFA500" /> <!-- Body -->
+    <circle cx="16" cy="10" r="6" fill="#FF8C00" /> <!-- Head -->
+    <rect x="22" y="14" width="8" height="4" fill="#000000" /> <!-- Arm -->
+    <rect x="12" y="32" width="4" height="10" fill="#8B4513" /> <!-- Leg L -->
+    <rect x="18" y="32" width="4" height="10" fill="#8B4513" /> <!-- Leg R -->
+  </g>
+  <!-- Punch Frame (32) -->
+  <g transform="translate(32,0)">
+    <rect x="10" y="10" width="12" height="22" fill="#FFA500" />
+    <circle cx="16" cy="10" r="6" fill="#FF8C00" />
+    <rect x="22" y="14" width="14" height="4" fill="#000000" /> <!-- Extended Arm -->
+    <rect x="12" y="32" width="4" height="10" fill="#8B4513" />
+    <rect x="18" y="32" width="4" height="10" fill="#8B4513" />
+  </g>
+  <!-- Kick Frame (64) -->
+  <g transform="translate(64,0)">
+    <rect x="10" y="10" width="12" height="22" fill="#FFA500" />
+    <circle cx="16" cy="10" r="6" fill="#FF8C00" />
+    <rect x="22" y="14" width="4" height="4" fill="#000000" />
+    <rect x="12" y="32" width="4" height="10" fill="#8B4513" />
+    <rect x="18" y="28" width="14" height="4" fill="#000000" /> <!-- Extended Leg -->
+  </g>
+  <!-- Hit Frame (96) -->
+  <g transform="translate(96,0)">
+    <rect x="8" y="10" width="12" height="22" fill="#FFD700" />
+    <circle cx="12" cy="8" r="6" fill="#FF4500" />
+    <rect x="20" y="12" width="4" height="4" fill="#000000" />
+    <rect x="10" y="32" width="4" height="10" fill="#8B4513" />
+  </g>
+</svg>

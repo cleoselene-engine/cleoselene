@@ -14,28 +14,36 @@
             width: 100vw; 
             height: 100vh; 
             display: flex;
+            flex-direction: column; /* Default to column for easier mobile handling */
+        }
+        
+        #game-container {
+            flex: 1;
+            width: 100%;
+            display: flex;
             justify-content: center;
             align-items: center;
+            overflow: hidden;
+            position: relative;
         }
-        /* Canvas will try to fit screen while maintaining aspect ratio if needed, or full stretch */
+
         canvas { 
             display: block;
-            width: 100%;
-            height: 100%;
-            object-fit: contain; /* Prevents distortion, keeps aspect ratio inside container */
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
         }
         
         .touch-controls {
-            position: fixed;
-            bottom: max(20px, env(safe-area-inset-bottom));
-            left: 0;
+            flex-shrink: 0;
             width: 100%;
             display: none; /* Hidden by default (Desktop) */
             flex-direction: column;
             gap: 10px;
-            padding: 0 20px;
+            padding: 10px 20px;
+            padding-bottom: max(20px, env(safe-area-inset-bottom));
             box-sizing: border-box;
-            pointer-events: none;
+            background: #000; /* Ensure controls have black bg if pushed */
             z-index: 2000;
         }
 
@@ -73,7 +81,7 @@
 
         /* Loading Overlay */
         #loading-overlay {
-            position: fixed;
+            position: absolute;
             top: 0;
             left: 0;
             width: 100%;
@@ -107,34 +115,36 @@
     </style>
 </head>
 <body>
-    <div id="loading-overlay">
-        <!-- Embedded Logo SVG -->
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="250" height="250">
-            <defs>
-              <filter id="goo">
-                <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur" />
-                <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 19 -9" result="goo" />
-                <feComposite in="SourceGraphic" in2="goo" operator="atop"/>
-              </filter>
-              <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" style="stop-color:#FFD700;stop-opacity:1" />
-                <stop offset="100%" style="stop-color:#DAA520;stop-opacity:1" />
-              </linearGradient>
-            </defs>
-            <g filter="url(#goo)">
-              <circle cx="85" cy="100" r="25" fill="url(#gold)" />
-              <circle cx="115" cy="100" r="25" fill="url(#gold)" />
-              <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="20s" repeatCount="indefinite" />
-            </g>
-            <g>
-              <circle cx="100" cy="40" r="8" fill="#F0F0F0" stroke="#DAA520" stroke-width="1" />
-              <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="6s" repeatCount="indefinite" />
-            </g>
-        </svg>
-        <div id="loading-text">CONNECTING...</div>
+    <div id="game-container">
+        <div id="loading-overlay">
+            <!-- Embedded Logo SVG -->
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="250" height="250">
+                <defs>
+                <filter id="goo">
+                    <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur" />
+                    <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 19 -9" result="goo" />
+                    <feComposite in="SourceGraphic" in2="goo" operator="atop"/>
+                </filter>
+                <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" style="stop-color:#FFD700;stop-opacity:1" />
+                    <stop offset="100%" style="stop-color:#DAA520;stop-opacity:1" />
+                </linearGradient>
+                </defs>
+                <g filter="url(#goo)">
+                <circle cx="85" cy="100" r="25" fill="url(#gold)" />
+                <circle cx="115" cy="100" r="25" fill="url(#gold)" />
+                <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="20s" repeatCount="indefinite" />
+                </g>
+                <g>
+                <circle cx="100" cy="40" r="8" fill="#F0F0F0" stroke="#DAA520" stroke-width="1" />
+                <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="6s" repeatCount="indefinite" />
+                </g>
+            </svg>
+            <div id="loading-text">CONNECTING...</div>
+        </div>
+        
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
     </div>
-    
-    <canvas id="gameCanvas" width="800" height="600"></canvas>
 
     <!-- Mobile Controls Overlay (Injected by Server) -->
     <!-- MOBILE_CONTROLS -->
