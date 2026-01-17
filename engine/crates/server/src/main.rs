@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::{Query, State, ws::{Message, WebSocket, WebSocketUpgrade}, Json},
     response::IntoResponse,
     routing::{get, post},
     Router,
@@ -20,12 +20,18 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use rust_embed::RustEmbed;
 use axum::http::{header, StatusCode, Uri};
+use sysinfo::{System, Networks, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
+use image::{ImageBuffer, RgbImage, Rgba};
+use imageproc::drawing::{draw_line_segment_mut, draw_filled_rect_mut, draw_text_mut};
+use imageproc::rect::Rect;
+use std::collections::HashMap;
+use std::io::Cursor;
+use bytes::{Buf, Bytes};
 
 // WebRTC Imports
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -40,10 +46,30 @@ struct ClientAssets;
 
 const LUA_API_DOCS: &str = include_str!("../../../MANUAL.md");
 
+const HELP_TUTORIAL: &str = "
+DEBUGGING WITH LLMs (MCP):
+  Use the --debug-mcp flag to enable the Model Context Protocol endpoint at /mcp.
+  This allows AI agents (like Claude, Gemini) to inspect and debug the running game.
+
+  Supported MCP Actions:
+  1. evaluate: Execute Lua code on the server.
+     Payload: { \"action\": \"evaluate\", \"code\": \"return players[1].x\" }
+  
+  2. render: Render the current frame for a session to PNG.
+     Payload: { \"action\": \"render\", \"session_id\": \"...\" }
+  
+  3. inspect: Get server resource usage (RAM/CPU).
+     Payload: { \"action\": \"inspect\" }
+
+  Example Cursor/Claude Usage:
+  \"Connect to the game server at localhost:3425/mcp and inspect the global 'players' table.\"
+";
+
 #[derive(Parser)]
 #[command(name = "Cleoselene", about = "A Multiplayer-First Server-Rendered Game Engine with Lua Scripting")]
 #[command(version = env!("BUILD_TIMESTAMP"))]
-#[command(after_help = LUA_API_DOCS)]
+#[command(after_help = format!("{}
+{}", LUA_API_DOCS, HELP_TUTORIAL))]
 struct Cli {
     /// Path to the Lua game script
     script_path: PathBuf,
@@ -60,10 +86,9 @@ struct Cli {
     #[arg(long)]
     export_client: Option<PathBuf>,
 
-    /// Enable the debug endpoint at /debug. 
-    /// Accepts POST requests with Lua code and returns the evaluation result.
+    /// Enable the MCP debug endpoint at /mcp.
     #[arg(long)]
-    debug: bool,
+    debug_mcp: bool,
 
     /// Run the game script in test mode (headless). 
     /// Initializes the engine, runs init() and one update() cycle, then exits.
@@ -77,6 +102,11 @@ struct ClientConnection {
     rx_input: mpsc::Receiver<(u8, bool)>,
 }
 
+enum DebugCommand {
+    Eval(String, oneshot::Sender<String>),
+    Render(String, oneshot::Sender<Option<bytes::Bytes>>),
+}
+
 // Global state used by Axum to push new clients to the game loop
 struct AppState {
     // Queue of new clients waiting to join the game loop
@@ -84,7 +114,8 @@ struct AppState {
     base_path: String,
     assets_dir: PathBuf,
     instance_id: String,
-    tx_debug: Option<mpsc::Sender<(String, oneshot::Sender<String>)>>,
+    tx_debug: Option<mpsc::Sender<DebugCommand>>,
+    sys: Arc<Mutex<System>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -159,9 +190,9 @@ async fn main() {
     let new_clients_queue = Arc::new(Mutex::new(Vec::new()));
     
     // Debug Channel
-    let (tx_debug, rx_debug) = if args.debug {
+    let (tx_debug, rx_debug) = if args.debug_mcp {
         let (tx, rx) = mpsc::channel(10);
-        println!("Debug endpoint enabled at /debug");
+        println!("Debug MCP endpoint enabled at /mcp");
         (Some(tx), Some(rx))
     } else {
         (None, None)
@@ -182,17 +213,20 @@ async fn main() {
     let instance_id = Uuid::new_v4().to_string();
     println!("Server Instance ID: {}", instance_id);
 
+    let sys = System::new_with_specifics(RefreshKind::new().with_cpu(CpuRefreshKind::everything()).with_memory(MemoryRefreshKind::everything()));
+
     let app_state = Arc::new(AppState {
         new_clients: new_clients_queue,
         base_path: args.base_path.clone(),
         assets_dir: assets_dir.clone(),
         instance_id,
         tx_debug,
+        sys: Arc::new(Mutex::new(sys)),
     });
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
-        .route("/debug", post(debug_handler))
+        .route("/mcp", post(mcp_handler))
         .route("/", get(serve_index))
         .route("/index.html", get(serve_index))
         .nest_service("/assets", ServeDir::new(assets_dir))
@@ -206,18 +240,218 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn debug_handler(State(state): State<Arc<AppState>>, body: String) -> impl IntoResponse {
-    if let Some(tx) = &state.tx_debug {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if tx.send((body, reply_tx)).await.is_ok() {
-            if let Ok(result) = reply_rx.await {
-                return result;
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum McpRequest {
+    Evaluate { code: String },
+    Render { session_id: String },
+    Inspect,
+}
+
+#[derive(Serialize)]
+struct McpResponse {
+    status: String,
+    result: Option<String>,
+    image: Option<String>, // Base64 PNG
+    metrics: Option<McpMetrics>,
+}
+
+#[derive(Serialize)]
+struct McpMetrics {
+    cpu_usage: f32,
+    memory_used: u64,
+    memory_total: u64,
+}
+
+async fn mcp_handler(State(state): State<Arc<AppState>>, Json(payload): Json<McpRequest>) -> impl IntoResponse {
+    match payload {
+        McpRequest::Evaluate { code } => {
+            if let Some(tx) = &state.tx_debug {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if tx.send(DebugCommand::Eval(code, reply_tx)).await.is_ok() {
+                    if let Ok(result) = reply_rx.await {
+                         return Json(McpResponse {
+                             status: "ok".to_string(),
+                             result: Some(result),
+                             image: None,
+                             metrics: None,
+                         });
+                    }
+                }
+                Json(McpResponse { status: "error".to_string(), result: Some("Game loop unresponsive".to_string()), image: None, metrics: None })
+            } else {
+                Json(McpResponse { status: "error".to_string(), result: Some("Debug disabled".to_string()), image: None, metrics: None })
+            }
+        },
+        McpRequest::Render { session_id } => {
+             if let Some(tx) = &state.tx_debug {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if tx.send(DebugCommand::Render(session_id, reply_tx)).await.is_ok() {
+                    if let Ok(Some(bytes)) = reply_rx.await {
+                         // Convert commands to PNG
+                         match render_to_png(bytes, &state.assets_dir) {
+                             Ok(png_bytes) => {
+                                 use base64::{Engine as _, engine::general_purpose};
+                                 let b64 = general_purpose::STANDARD.encode(&png_bytes);
+                                 return Json(McpResponse {
+                                     status: "ok".to_string(),
+                                     result: None,
+                                     image: Some(b64),
+                                     metrics: None,
+                                 });
+                             },
+                             Err(e) => return Json(McpResponse { status: "error".to_string(), result: Some(format!("Render failed: {}", e)), image: None, metrics: None }),
+                         }
+                    }
+                }
+                Json(McpResponse { status: "error".to_string(), result: Some("Render failed or empty".to_string()), image: None, metrics: None })
+            } else {
+                Json(McpResponse { status: "error".to_string(), result: Some("Debug disabled".to_string()), image: None, metrics: None })
+            }
+        },
+        McpRequest::Inspect => {
+            let mut sys = state.sys.lock().unwrap();
+            sys.refresh_all();
+            let cpu_usage = sys.global_cpu_info().cpu_usage();
+            let memory_used = sys.used_memory();
+            let memory_total = sys.total_memory();
+            
+            Json(McpResponse {
+                status: "ok".to_string(),
+                result: None,
+                image: None,
+                metrics: Some(McpMetrics {
+                    cpu_usage,
+                    memory_used,
+                    memory_total,
+                }),
+            })
+        }
+    }
+}
+
+// Simple Software Renderer for Debugging
+fn render_to_png(mut commands: bytes::Bytes, assets_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    const WIDTH: u32 = 800;
+    const HEIGHT: u32 = 600;
+    
+    let mut img: RgbImage = ImageBuffer::new(WIDTH, HEIGHT);
+    
+    // Default background black
+    imageproc::drawing::draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(WIDTH, HEIGHT), Rgb([0, 0, 0]));
+
+    let mut current_color = Rgba([255, 255, 255, 255]);
+    
+    // OpCodes (Must match engine/src/lib.rs)
+    const OP_CLEAR: u8 = 0x01;
+    const OP_SET_COLOR: u8 = 0x02;
+    const OP_FILL_RECT: u8 = 0x03;
+    const OP_DRAW_LINE: u8 = 0x04;
+    const OP_DRAW_TEXT: u8 = 0x05;
+    const OP_DRAW_IMAGE: u8 = 0x0B;
+
+    while commands.has_remaining() {
+        let op = commands.get_u8();
+        match op {
+            OP_CLEAR => {
+                let r = commands.get_u8();
+                let g = commands.get_u8();
+                let b = commands.get_u8();
+                imageproc::drawing::draw_filled_rect_mut(&mut img, Rect::at(0, 0).of_size(WIDTH, HEIGHT), Rgb([r, g, b]));
+            },
+            OP_SET_COLOR => {
+                let r = commands.get_u8();
+                let g = commands.get_u8();
+                let b = commands.get_u8();
+                let a = commands.get_u8();
+                current_color = Rgba([r, g, b, a]);
+            },
+            OP_FILL_RECT => {
+                let x = commands.get_f32_le() as i32;
+                let y = commands.get_f32_le() as i32;
+                let w = commands.get_f32_le() as u32;
+                let h = commands.get_f32_le() as u32;
+                let rgb = Rgb([current_color[0], current_color[1], current_color[2]]);
+                imageproc::drawing::draw_filled_rect_mut(&mut img, Rect::at(x, y).of_size(w, h), rgb);
+            },
+            OP_DRAW_LINE => {
+                let x1 = commands.get_f32_le();
+                let y1 = commands.get_f32_le();
+                let x2 = commands.get_f32_le();
+                let y2 = commands.get_f32_le();
+                let _width = commands.get_f32_le(); // Width ignored in simple renderer
+                let rgb = Rgb([current_color[0], current_color[1], current_color[2]]);
+                imageproc::drawing::draw_line_segment_mut(&mut img, (x1, y1), (x2, y2), rgb);
+            },
+            OP_DRAW_TEXT => {
+                let x = commands.get_f32_le();
+                let y = commands.get_f32_le();
+                let len = commands.get_u16_le() as usize;
+                let bytes = commands.copy_to_bytes(len);
+                // Placeholder: Draw a small rect for text
+                let rgb = Rgb([current_color[0], current_color[1], current_color[2]]);
+                 imageproc::drawing::draw_filled_rect_mut(&mut img, Rect::at(x as i32, y as i32).of_size(len as u32 * 8, 10), rgb);
+            },
+            OP_DRAW_IMAGE => {
+                let len = commands.get_u16_le() as usize;
+                let _name_bytes = commands.copy_to_bytes(len);
+                // Skip args
+                let x = commands.get_f32_le() as i32;
+                let y = commands.get_f32_le() as i32;
+                let w = commands.get_f32_le(); // w
+                let h = commands.get_f32_le(); // h
+                let _ = commands.get_f32_le(); // sx
+                let _ = commands.get_f32_le(); // sy
+                let _ = commands.get_f32_le(); // sw
+                let _ = commands.get_f32_le(); // sh
+                let _ = commands.get_f32_le(); // r
+                let _ = commands.get_f32_le(); // ox
+                let _ = commands.get_f32_le(); // oy
+
+                // Placeholder: Draw a blue rect for images
+                let rgb = Rgb([0, 0, 255]);
+                let width = if w > 0.0 { w as u32 } else { 32 };
+                let height = if h > 0.0 { h as u32 } else { 32 };
+                imageproc::drawing::draw_filled_rect_mut(&mut img, Rect::at(x, y).of_size(width, height), rgb);
+            },
+            0x06 | 0x07 | 0x08 | 0x09 => {
+                // Sound ops - skip
+                // Variable length args handling is tricky here without strict parsing logic
+                // OP_LOAD_SOUND: len(u16) + bytes + len(u16) + bytes
+                if op == 0x06 {
+                    let l1 = commands.get_u16_le() as usize; commands.advance(l1);
+                    let l2 = commands.get_u16_le() as usize; commands.advance(l2);
+                }
+                // OP_PLAY_SOUND: len(u16) + bytes + u8 + f32
+                if op == 0x07 {
+                    let l1 = commands.get_u16_le() as usize; commands.advance(l1);
+                    commands.advance(1 + 4);
+                }
+                // OP_STOP_SOUND: len(u16) + bytes
+                if op == 0x08 {
+                    let l1 = commands.get_u16_le() as usize; commands.advance(l1);
+                }
+                // OP_SET_VOLUME: len(u16) + bytes + f32
+                if op == 0x09 {
+                    let l1 = commands.get_u16_le() as usize; commands.advance(l1);
+                    commands.advance(4);
+                }
+            },
+            0x0A => {
+                // OP_LOAD_IMAGE: len(u16) + bytes + len(u16) + bytes
+                 let l1 = commands.get_u16_le() as usize; commands.advance(l1);
+                 let l2 = commands.get_u16_le() as usize; commands.advance(l2);
+            },
+            _ => {
+                // Unknown op, stop to avoid misalignment
+                break;
             }
         }
-        "Error: Game loop unresponsive".to_string()
-    } else {
-        "Debug disabled".to_string()
     }
+
+    let mut cursor = Cursor::new(Vec::new());
+    img.write_to(&mut cursor, image::ImageFormat::Png)?;
+    Ok(cursor.into_inner())
 }
 
 // Serve index.html with config injection from Embedded Assets
@@ -303,7 +537,7 @@ struct ActiveClient {
     rx_input: mpsc::Receiver<(u8, bool)>,
 }
 
-fn game_loop(new_clients_queue: Arc<Mutex<Vec<ClientConnection>>>, script_path: PathBuf, mut rx_debug: Option<mpsc::Receiver<(String, oneshot::Sender<String>)>>) {
+fn game_loop(new_clients_queue: Arc<Mutex<Vec<ClientConnection>>>, script_path: PathBuf, mut rx_debug: Option<mpsc::Receiver<DebugCommand>>) {
     println!("Global Game Loop Started");
     
     // Convert PathBuf to String for loading
@@ -392,9 +626,20 @@ fn game_loop(new_clients_queue: Arc<Mutex<Vec<ClientConnection>>>, script_path: 
 
         // Handle Debug
         if let Some(rx) = &mut rx_debug {
-            if let Ok((code, tx)) = rx.try_recv() {
-                let result = game.eval(&code);
-                let _ = tx.send(result);
+            if let Ok(cmd) = rx.try_recv() {
+                match cmd {
+                    DebugCommand::Eval(code, tx) => {
+                        let result = game.eval(&code);
+                        let _ = tx.send(result);
+                    },
+                    DebugCommand::Render(session_id, tx) => {
+                        // We must re-run draw for this specific session
+                        // Note: This might have side effects if draw() mutates state (it shouldn't, but Lua...)
+                        // Ideally we'd cache the last frame, but we don't store it.
+                        let result = game.draw(&session_id).ok();
+                        let _ = tx.send(result);
+                    }
+                }
             }
         }
 
@@ -491,11 +736,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
     println!("Client {} connecting via WebSocket...", session_id);
 
     // 1. Send Handshake
-    let handshake = SignalMessage::WELCOME { 
+    let handshake = SignalMessage::WELCOME {
         session_id: session_id.clone(),
-        server_instance_id: state.instance_id.clone() 
+        server_instance_id: state.instance_id.clone()
     };
-    if let Err(e) = socket.send(Message::Text(serde_json::to_string(&handshake).unwrap().into())).await {
+    if let Err(e) = socket.send(Message::Text(serde_json::to_string(&handshake).unwrap().into())).
+    await {
         eprintln!("Handshake failed: {}", e);
         return;
     }
@@ -590,7 +836,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
             })
         }));
         
-        Box::pin(async {})
+        Box::pin(async {{}})
     }));
 
     // 6. WebSocket Signaling & Coordinator Loop
@@ -653,7 +899,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
                         sdp_mline_index: json_cand.sdp_mline_index,
                     };
                     let str_msg = serde_json::to_string(&msg).unwrap();
-                    let _ = tx.send(Message::Text(str_msg.into())).await;
+                    let _ = tx.send(Message::Text(str_msg.into())).
+                    await;
                 }
             }
         })
@@ -675,7 +922,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
                                          if let Ok(answer) = pc_clone.create_answer(None).await {
                                              if pc_clone.set_local_description(answer.clone()).await.is_ok() {
                                                  let resp = SignalMessage::ANSWER { sdp: answer.sdp };
-                                                 let _ = ws_sender.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).await;
+                                                 let _ = ws_sender.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).
+                                                 await;
                                              }
                                          }
                                      }
@@ -693,7 +941,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
                                     };
                                     let _ = pc_clone.add_ice_candidate(cand).await;
                                 },
-                                _ => {}
+                                _ => {} // Ignore other message types
                             }
                         }
                     },
@@ -704,7 +952,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
                         }
                     },
                     Some(Err(_)) | None => break, // Disconnected
-                    _ => {}
+                    _ => {} // Ignore other message types
                 }
             },
             // 2. Outgoing WS Frame (Fallback)
