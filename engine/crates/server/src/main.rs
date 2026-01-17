@@ -20,13 +20,11 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use rust_embed::RustEmbed;
 use axum::http::{header, StatusCode, Uri};
-use sysinfo::{System, Networks, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
+use sysinfo::{System, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
 use image::{ImageBuffer, RgbImage, Rgba, Rgb};
-use imageproc::drawing::{draw_line_segment_mut, draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
-use std::collections::HashMap;
 use std::io::Cursor;
-use bytes::{Buf, Bytes};
+use bytes::Buf;
 
 // WebRTC Imports
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -559,7 +557,7 @@ fn get_sdk_docs() -> Vec<SdkFunction> {
 }
 
 // Simple Software Renderer for Debugging
-fn render_to_png(mut commands: bytes::Bytes, assets_dir: &Path) -> anyhow::Result<Vec<u8>> {
+fn render_to_png(mut commands: bytes::Bytes, _assets_dir: &Path) -> anyhow::Result<Vec<u8>> {
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 600;
     
@@ -615,7 +613,7 @@ fn render_to_png(mut commands: bytes::Bytes, assets_dir: &Path) -> anyhow::Resul
                 let x = commands.get_f32_le();
                 let y = commands.get_f32_le();
                 let len = commands.get_u16_le() as usize;
-                let bytes = commands.copy_to_bytes(len);
+                let _bytes = commands.copy_to_bytes(len);
                 // Placeholder: Draw a small rect for text
                 let rgb = Rgb([current_color[0], current_color[1], current_color[2]]);
                  imageproc::drawing::draw_filled_rect_mut(&mut img, Rect::at(x as i32, y as i32).of_size(len as u32 * 8, 10), rgb);
