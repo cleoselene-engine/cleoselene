@@ -305,17 +305,25 @@ async fn mcp_handler(State(state): State<Arc<AppState>>, Json(payload): Json<Mcp
         McpRequest::Render { session_id } => {
              if let Some(tx) = &state.tx_debug {
                 let (reply_tx, reply_rx) = oneshot::channel();
+                let session_id_clone = session_id.clone();
                 if tx.send(DebugCommand::Render(session_id, reply_tx)).await.is_ok() {
                     if let Ok(Some(bytes)) = reply_rx.await {
                          // Convert commands to PNG
                          match render_to_png(bytes, &state.assets_dir) {
                              Ok(png_bytes) => {
-                                 use base64::{Engine as _, engine::general_purpose};
-                                 let b64 = general_purpose::STANDARD.encode(&png_bytes);
+                                 // Save to file
+                                 let mcp_dir = state.assets_dir.join(".cleoselene-mcp");
+                                 let _ = std::fs::create_dir_all(&mcp_dir);
+                                 let file_path = mcp_dir.join(format!("{}.png", session_id_clone));
+                                 let save_result = match std::fs::write(&file_path, &png_bytes) {
+                                     Ok(_) => format!("{:?}", file_path),
+                                     Err(e) => format!("Error saving: {}", e),
+                                 };
+
                                  return Json(McpResponse {
                                      status: "ok".to_string(),
-                                     result: None,
-                                     image: Some(b64),
+                                     result: Some(save_result),
+                                     image: None,
                                      metrics: None,
                                      sdk: None,
                                  });
