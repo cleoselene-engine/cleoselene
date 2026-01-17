@@ -26,6 +26,7 @@ use imageproc::rect::Rect;
 use std::io::{Cursor, Read};
 use bytes::Buf;
 use byteorder::{LittleEndian, ReadBytesExt};
+use rayon::prelude::*;
 
 // ML Imports
 use engine::transformer;
@@ -1040,8 +1041,11 @@ fn game_loop(new_clients_queue: Arc<Mutex<Vec<ClientConnection>>>, script_path: 
                 
                 // Init player and get initialization commands (e.g. load_sound)
                 match game.on_connect(&conn.session_id) {
-                    Ok(bytes) => {
-                        let _ = conn.tx_render.try_send(bytes);
+                    Ok(raw_bytes) => {
+                        // FIX: Compress on_connect payload as client expects Zstd (since coordinator_handle no longer compresses)
+                        if let Ok(compressed) = zstd::stream::encode_all(Cursor::new(raw_bytes), 0) {
+                             let _ = conn.tx_render.try_send(bytes::Bytes::from(compressed));
+                        }
                     },
                     Err(e) => {
                         eprintln!("Lua on_connect Error (Session {}): {}", conn.session_id, e);
@@ -1101,28 +1105,51 @@ fn game_loop(new_clients_queue: Arc<Mutex<Vec<ClientConnection>>>, script_path: 
             eprintln!("Update error: {}", e);
         }
 
-        // 5. Render for Each Client
-        clients.retain(|client| {
-            match game.draw(&client.session_id) {
-                Ok(bytes) => {
-                    // Try to send. If receiver dropped (client closed connection), this fails.
-                    // If channel full, we drop the frame (lag), but don't disconnect.
-                    match client.tx_render.try_send(bytes) {
-                        Ok(_) => true,
-                        Err(mpsc::error::TrySendError::Full(_)) => true, // Lag
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                             println!("Render channel closed for {}", client.session_id);
-                             let _ = game.on_disconnect(&client.session_id);
-                             false // Remove
-                        }
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Draw error {}: {}", client.session_id, e);
-                    true
+        // 5. Render for Each Client (Parallelized Compression)
+        // A. Lua Render (Serial)
+        let mut raw_frames = Vec::with_capacity(clients.len());
+        for (i, client) in clients.iter().enumerate() {
+             match game.draw(&client.session_id) {
+                 Ok(bytes) => raw_frames.push((i, bytes)),
+                 Err(e) => eprintln!("Draw error {}: {}", client.session_id, e),
+             }
+        }
+
+        // B. Compression (Parallel via Rayon)
+        let compressed_packets: Vec<(usize, bytes::Bytes)> = raw_frames
+            .par_iter()
+            .map(|(idx, raw)| {
+                let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 0).unwrap();
+                std::io::Write::write_all(&mut encoder, raw).unwrap();
+                let compressed = encoder.finish().unwrap();
+                (*idx, bytes::Bytes::from(compressed))
+            })
+            .collect();
+
+        // C. Send
+        let mut dead_clients = std::collections::HashSet::new();
+        for (idx, data) in compressed_packets {
+            let client = &clients[idx];
+            match client.tx_render.try_send(data) {
+                Ok(_) => {},
+                Err(mpsc::error::TrySendError::Full(_)) => {},
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    println!("Render channel closed for {}", client.session_id);
+                    let _ = game.on_disconnect(&client.session_id);
+                    dead_clients.insert(idx);
                 }
             }
-        });
+        }
+        
+        // D. Cleanup
+        if !dead_clients.is_empty() {
+            let mut i = 0;
+            clients.retain(|_| {
+                let dead = dead_clients.contains(&i);
+                i += 1;
+                !dead
+            });
+        }
 
         // Sleep
         let elapsed = now.elapsed();
@@ -1281,38 +1308,19 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
     let (tx_ws_frame, mut rx_ws_frame) = mpsc::channel::<Vec<u8>>(30);
 
     let coordinator_handle = tokio::spawn(async move {
-        use std::io::Write;
+        // use std::io::Write; // Unused if no compression
 
         while let Some(bytes) = rx_render.recv().await {
-            // println!("Sending frame: {} bytes", bytes.len());
-            // Compress with Zstd (Standard, Level 0)
-            let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 0).unwrap();
+            // Already compressed by game_loop via Rayon
+            let data = bytes; // bytes::Bytes
             
-            if encoder.write_all(&bytes).is_ok() {
-                if let Ok(compressed) = encoder.finish() {
-                    let data = bytes::Bytes::from(compressed);
-                    
-                    // Check DC
-                    let _dc_opt = active_dc_sender.lock().await.clone(); // Unused now
-                    let sent_via_udp = false; // FORCE FALSE to use TCP/WS
-                    
-                    /* WEBRTC DISABLED FOR STABILITY
-                    if let Some(dc) = dc_opt {
-                         if dc.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                             if let Err(_e) = dc.send(&data).await {
-                                 // eprintln!("WebRTC Send Error: {}", _e);
-                             } else {
-                                 sent_via_udp = true;
-                             }
-                         }
-                    } 
-                    */
-                    
-                    if !sent_via_udp {
-                         // Fallback TCP
-                         let _ = tx_ws_frame.send(data.to_vec()).await;
-                    }
-                }
+            // Check DC
+            let _dc_opt = active_dc_sender.lock().await.clone(); // Unused now
+            let sent_via_udp = false; // FORCE FALSE to use TCP/WS
+            
+            if !sent_via_udp {
+                    // Fallback TCP
+                    let _ = tx_ws_frame.send(data.to_vec()).await;
             }
         }
         println!("Coordinator task finished for session {}", session_id_rtc);

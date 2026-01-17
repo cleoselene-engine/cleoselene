@@ -36,6 +36,7 @@ candle-core = { version = "0.8.2", features = ["metal"] }
 candle-nn = { version = "0.8.2", features = ["metal"] }
 byteorder = "1.5.0"
 rand = "0.8.5"
+rayon = "1.8"
 
 [dev-dependencies]
 tokio-tungstenite = "0.28.0"

@@ -706,6 +706,7 @@ dependencies = [
  "mime_guess",
  "notify",
  "rand 0.8.5",
+ "rayon",
  "rust-embed",
  "rusttype",
  "serde",
