@@ -95,7 +95,7 @@ jobs:
           echo "🔧 Configuring Caddy..."
           ssh $SERVER_USER@$SERVER_IP "cat > /etc/caddy/Caddyfile <<EOF
           cleoselene.com {
-              root * /opt/game-server/website
+              root * $REMOTE_DIR/website
               file_server
               
               rewrite /install /install.sh
@@ -105,7 +105,7 @@ jobs:
               redir /astro-maze /astro-maze/
 
               handle_path /astro-maze/* {
-                  root * /opt/game-server/website/game-client
+                  root * $REMOTE_DIR/website/game-client
                   file_server
                   try_files {path} index.html
               }
