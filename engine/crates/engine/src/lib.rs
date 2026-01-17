@@ -1,6 +1,8 @@
 use bytes::{BufMut, Bytes, BytesMut};
+#[cfg(feature = "lua")]
 use mlua::{Lua, Function, LuaSerdeExt, StdLib, LuaOptions, UserData, AnyUserData};
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "lua")]
 use serde_json::Value;
 
 mod spatial_db;
@@ -8,6 +10,7 @@ use spatial_db::SpatialDb;
 mod physics;
 use physics::PhysicsWorld;
 mod graph_nav;
+pub mod transformer;
 use graph_nav::Graph;
 
 // OpCodes
@@ -24,15 +27,17 @@ const OP_LOAD_IMAGE: u8 = 0x0A;
 const OP_DRAW_IMAGE: u8 = 0x0B;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum GameMode {
+pub enum GameMode {
     Update,
     Draw,
 }
 
 // Wrapper for SpatialDb to be exposed as UserData
+#[cfg(feature = "lua")]
 #[derive(Clone)]
 struct SpatialDbWrapper(Arc<Mutex<SpatialDb>>);
 
+#[cfg(feature = "lua")]
 impl UserData for SpatialDbWrapper {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("add_circle", |_, this, (x, y, r, tag): (f32, f32, f32, String)| {
@@ -90,9 +95,11 @@ impl UserData for SpatialDbWrapper {
 }
 
 // Wrapper for PhysicsWorld
+#[cfg(feature = "lua")]
 #[derive(Clone)]
 struct PhysicsWrapper(Arc<Mutex<PhysicsWorld>>);
 
+#[cfg(feature = "lua")]
 impl UserData for PhysicsWrapper {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("add_body", |_, this, (id, props): (u64, mlua::Table)| {
@@ -142,9 +149,11 @@ impl UserData for PhysicsWrapper {
 }
 
 // Wrapper for Graph
+#[cfg(feature = "lua")]
 #[derive(Clone)]
 struct GraphWrapper(Arc<Mutex<Graph>>);
 
+#[cfg(feature = "lua")]
 impl UserData for GraphWrapper {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("add_node", |_, this, (id, x, y): (u64, f32, f32)| {
@@ -325,6 +334,7 @@ impl CommandBuffer {
     }
 }
 
+#[cfg(feature = "lua")]
 pub struct GameState {
     lua: Lua,
     command_buffer: CommandBuffer,
@@ -332,6 +342,7 @@ pub struct GameState {
     current_mode: Arc<Mutex<GameMode>>,
 }
 
+#[cfg(feature = "lua")]
 impl GameState {
     pub fn new(script_content: &str, script_path: Option<&std::path::Path>) -> anyhow::Result<Self> {
         // SANDBOX SECURITY:

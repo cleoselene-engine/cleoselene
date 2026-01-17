@@ -154,8 +154,37 @@ function init() {
     window.addEventListener('keydown', (e) => { if(!e.repeat) sendInput(e.keyCode, true); });
     window.addEventListener('keyup', (e) => { sendInput(e.keyCode, false); });
 
+    // Initialize Predictive Model if available
+    if (window.CLEOSELENE_CONFIG && window.CLEOSELENE_CONFIG.hasModel) {
+        console.log("Predictive Model detected on server. Loading...");
+        const bp = getBasePath();
+        fetch(bp + '/model.bin')
+            .then(r => r.arrayBuffer())
+            .then(buffer => {
+                console.log(`Model loaded (${buffer.byteLength} bytes). Initializing Predictor...`);
+                window.Cleoselene.predictor = new PredictiveEngine(buffer);
+            })
+            .catch(e => console.error("Failed to load predictive model:", e));
+    }
+
     // Connect
     connect();
+}
+
+class PredictiveEngine {
+    constructor(modelBuffer) {
+        this.model = modelBuffer;
+        console.log("PredictiveEngine ready. (Inference Logic Pending)");
+        // TODO: Initialize ONNX Runtime or TensorFlow.js here
+        // this.session = await ort.InferenceSession.create(modelBuffer);
+    }
+
+    predict(currentState, inputs) {
+        // Placeholder for inference:
+        // Input: Current Game State + User Inputs
+        // Output: Predicted Next Game State
+        return null;
+    }
 }
 
 function scheduleReconnect() {
@@ -256,6 +285,116 @@ async function setupWebRTC() {
     ws.send(JSON.stringify({ type: 'OFFER', sdp: offer.sdp }));
 }
 
+// Recording Logic
+window.Cleoselene = {
+    recorder: null,
+    startRecording: () => {
+        console.log("Recording started...");
+        window.Cleoselene.recorder = new NetworkRecorder();
+    },
+    stop: () => {
+        if (window.Cleoselene.recorder) {
+            window.Cleoselene.recorder.stop();
+        }
+    },
+    download: (filename = "traffic.bin") => {
+        if (window.Cleoselene.recorder) {
+            window.Cleoselene.recorder.download(filename);
+        }
+    }
+};
+
+class NetworkRecorder {
+    constructor() {
+        this.chunks = []; 
+        this.startTime = Date.now();
+        this.isRecording = true;
+    }
+
+    // type: 0 = Server Update (S), 1 = Client Input (C)
+    record(type, data) {
+        if (!this.isRecording) return;
+        
+        let buf;
+        if (data instanceof Uint8Array) {
+            buf = data; // Already Uint8Array
+        } else if (data instanceof ArrayBuffer) {
+            buf = new Uint8Array(data);
+        } else if (data instanceof Blob) {
+            // Async blob handling is tricky in synchronous flow, 
+            // but for now we assume ArrayBuffers mostly in this engine.
+            // If Blob, we might miss it here or need to await. 
+            // In processCompressedFrame we await .arrayBuffer(), so pass that result.
+            console.warn("Recorder received Blob, might be ignored if not converted.");
+            return; 
+        } else {
+            return;
+        }
+
+        // Copy buffer to avoid reference issues
+        const copy = new Uint8Array(buf.length);
+        copy.set(buf);
+
+        this.chunks.push({
+            t: Date.now() - this.startTime,
+            type: type,
+            data: copy
+        });
+    }
+
+    stop() {
+        this.isRecording = false;
+        console.log(`Recording stopped. Captured ${this.chunks.length} packets.`);
+    }
+
+    download(filename) {
+        if (this.chunks.length === 0) {
+            console.warn("No data to download.");
+            return;
+        }
+
+        // Calculate total size
+        // Format per packet: [Time(4)][Type(1)][Len(4)][Body...]
+        let totalSize = 0;
+        for (const chunk of this.chunks) {
+            totalSize += 4 + 1 + 4 + chunk.data.length;
+        }
+
+        const buffer = new Uint8Array(totalSize);
+        const view = new DataView(buffer.buffer);
+        let offset = 0;
+
+        for (const chunk of this.chunks) {
+            // Time (u32)
+            view.setUint32(offset, chunk.t, true); // Little Endian
+            offset += 4;
+            
+            // Type (u8)
+            view.setUint8(offset, chunk.type);
+            offset += 1;
+
+            // Length (u32)
+            view.setUint32(offset, chunk.data.length, true);
+            offset += 4;
+
+            // Body
+            buffer.set(chunk.data, offset);
+            offset += chunk.data.length;
+        }
+
+        const blob = new Blob([buffer], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        console.log(`Downloaded ${totalSize} bytes.`);
+    }
+}
+
 async function processCompressedFrame(data) {
     try {
         frameCount++;
@@ -267,6 +406,11 @@ async function processCompressedFrame(data) {
         let streamData = data;
         if (data instanceof Blob) { streamData = await data.arrayBuffer(); }
         
+        // RECORDER HOOK (Type 0 = Server)
+        if (window.Cleoselene.recorder) {
+            window.Cleoselene.recorder.record(0, streamData);
+        }
+
         // Zstd Decompression (Standard)
         const decompressed = decompress(new Uint8Array(streamData));
         renderFrame(new DataView(decompressed.buffer));
@@ -278,6 +422,12 @@ async function processCompressedFrame(data) {
 function sendInput(code, isDown) {
     const buf = new Uint8Array(2);
     buf[0] = code; buf[1] = isDown ? 1 : 0;
+    
+    // RECORDER HOOK (Type 1 = Client)
+    if (window.Cleoselene.recorder) {
+        window.Cleoselene.recorder.record(1, buf);
+    }
+
     if (dc && dc.readyState === 'open') { dc.send(buf); } 
     else if (ws && ws.readyState === WebSocket.OPEN) { ws.send(buf); }
 }

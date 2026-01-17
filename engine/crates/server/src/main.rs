@@ -17,14 +17,20 @@ use uuid::Uuid;
 use notify::{Watcher, RecursiveMode, Event};
 use std::sync::mpsc::channel;
 use std::path::{Path, PathBuf};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use rust_embed::RustEmbed;
 use axum::http::{header, StatusCode, Uri};
 use sysinfo::{System, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
 use image::{ImageBuffer, RgbImage, Rgba, Rgb};
 use imageproc::rect::Rect;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use bytes::Buf;
+use byteorder::{LittleEndian, ReadBytesExt};
+
+// ML Imports
+use engine::transformer;
+use candle_core::{DType, Device, Tensor};
+use candle_nn::{VarBuilder, VarMap, Optimizer};
 
 // WebRTC Imports
 use webrtc::api::interceptor_registry::register_default_interceptors;
@@ -71,8 +77,11 @@ DEBUGGING WITH LLMs (MCP):
 #[command(version = env!("BUILD_TIMESTAMP"))]
 #[command(after_help = format!("{}\n{}", LUA_API_DOCS, HELP_TUTORIAL))]
 struct Cli {
-    /// Path to the Lua game script
-    script_path: PathBuf,
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Path to the Lua game script (Required if no subcommand is used)
+    script_path: Option<PathBuf>,
 
     /// Port to start the server on
     #[arg(long, default_value_t = 3425)]
@@ -94,6 +103,28 @@ struct Cli {
     /// Initializes the engine, runs init() and one update() cycle, then exits.
     #[arg(long)]
     test: bool,
+    
+    /// Path to a predictive model for client-side state prediction optimization.
+    #[arg(long)]
+    predictive_model: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Train a predictive model from recorded game traffic
+    Train {
+        /// Input binary file recorded from client traffic
+        #[arg(long)]
+        input: PathBuf,
+
+        /// Output path for the trained model
+        #[arg(long)]
+        output: PathBuf,
+
+        /// Number of training epochs
+        #[arg(long, default_value_t = 10)]
+        epochs: usize,
+    }
 }
 
 struct ClientConnection {
@@ -116,6 +147,7 @@ struct AppState {
     instance_id: String,
     tx_debug: Option<mpsc::Sender<DebugCommand>>,
     sys: Arc<Mutex<System>>,
+    predictive_model_path: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -134,10 +166,154 @@ async fn main() {
 
     let args = Cli::parse();
 
+    // Handle Subcommands
+    if let Some(Commands::Train { input, output, epochs }) = args.command {
+        println!(">>> Cleoselene Transformer Trainer <<<");
+        println!("Input Data: {:?}", input);
+        println!("Output Model: {:?}", output);
+        println!("Epochs: {}", epochs);
+        
+        if !input.exists() {
+            eprintln!("Error: Input file {:?} does not exist.", input);
+            std::process::exit(1);
+        }
+        
+        // 1. Load and Parse Data
+        println!("Loading traffic data...");
+        let raw_data = std::fs::read(&input).expect("Failed to read input");
+        let mut cursor = Cursor::new(&raw_data);
+        let mut tokens: Vec<u8> = Vec::new();
+        let mut packet_count = 0;
+
+        while cursor.position() < raw_data.len() as u64 {
+            let _time = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+            let p_type = cursor.read_u8().unwrap_or(0);
+            let len = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+            
+            let mut body = vec![0u8; len as usize];
+            if cursor.read_exact(&mut body).is_err() { break; }
+
+            if p_type == 0 {
+                // Server Update (Zstd Compressed)
+                if let Ok(decompressed) = zstd::stream::decode_all(Cursor::new(&body)) {
+                    tokens.extend(decompressed);
+                }
+            } else {
+                // Client Input (Raw)
+                tokens.extend(body);
+            }
+            packet_count += 1;
+        }
+        println!("Processed {} packets. Total tokens: {}", packet_count, tokens.len());
+
+        if tokens.len() < 128 {
+            eprintln!("Error: Not enough data to train (need > 128 bytes). Record more gameplay!");
+            std::process::exit(1);
+        }
+
+        // 2. Initialize Model
+        let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+        println!("Training on device: {:?}", device);
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let config = transformer::Config::default();
+        let model = transformer::Transformer::new(&config, vb).expect("Failed to create model");
+
+        // 3. Optimizer
+        let mut opt = candle_nn::AdamW::new_lr(varmap.all_vars(), 0.001).expect("Failed to create optimizer");
+
+        // 4. Training Loop
+        let batch_size = 4;
+        let block_size = config.max_seq_len;
+        // epochs variable is now from args
+        let steps_per_epoch = 100;
+
+        // Convert data to tensor
+        // Truncate to make training easier logic-wise for demo
+        let data_len = tokens.len();
+        let data_tensor = Tensor::from_vec(tokens.iter().map(|&x| x as u32).collect::<Vec<_>>(), data_len, &device).unwrap();
+
+        println!("Starting training ({} epochs)...", epochs);
+        
+        // Simple LCG RNG to avoid external dependency
+        let mut seed = 123456789u64;
+        let mut next_rand = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            seed
+        };
+
+        for epoch in 1..=epochs {
+            let start_epoch = Instant::now();
+            let mut total_loss = 0.0;
+            
+            for _ in 0..steps_per_epoch {
+                // Random batch sampling using LCG
+                let mut batch_indices = Vec::new();
+                for _ in 0..batch_size {
+                    let r = next_rand() as usize;
+                    let idx = r % (data_len - block_size - 1);
+                    batch_indices.push(idx);
+                }
+
+                let mut inputs_vec = Vec::new();
+                let mut targets_vec = Vec::new();
+
+                for &start in &batch_indices {
+                    let chunk = data_tensor.narrow(0, start, block_size).unwrap();
+                    let target = data_tensor.narrow(0, start + 1, block_size).unwrap();
+                    inputs_vec.push(chunk);
+                    targets_vec.push(target);
+                }
+
+                let inputs = Tensor::stack(&inputs_vec, 0).unwrap();
+                let targets = Tensor::stack(&targets_vec, 0).unwrap();
+
+                // Forward
+                let logits = model.forward(&inputs).unwrap();
+                let (b, t, c) = logits.dims3().unwrap();
+                let logits_flat = logits.reshape((b * t, c)).unwrap();
+                let targets_flat = targets.reshape(b * t).unwrap();
+                
+                let loss = candle_nn::loss::cross_entropy(&logits_flat, &targets_flat).unwrap();
+                
+                // Backward
+                opt.backward_step(&loss).unwrap();
+                
+                total_loss += loss.to_vec0::<f32>().unwrap();
+            }
+            
+            let duration = start_epoch.elapsed();
+            println!("Epoch {}/{} - Avg Loss: {:.4} - Time: {:.2?}", epoch, epochs, total_loss / steps_per_epoch as f32, duration);
+        }
+
+        // 5. Save Model
+        println!("Saving model weights to {:?}...", output);
+        varmap.save(&output).expect("Failed to save weights");
+        println!("Done!");
+        
+        std::process::exit(0);
+    }
+
+    // Default Server Mode
+    // Validate script_path exists if no subcommand
+    let script_path = match args.script_path {
+        Some(p) => p,
+        None => {
+            // Check if export_client was requested (valid use case without script)
+            if args.export_client.is_some() {
+                PathBuf::new() // Dummy path, handled below
+            } else {
+                eprintln!("Error: 'script_path' is required when starting the server.");
+                eprintln!("Usage: cleoselene <SCRIPT_PATH> [OPTIONS]");
+                std::process::exit(1);
+            }
+        }
+    };
+
     // Test Mode
     if args.test {
-        println!("Running in TEST mode: {:?}", args.script_path);
-        let script_path_str = args.script_path.to_string_lossy().to_string();
+        println!("Running in TEST mode: {:?}", script_path);
+        let script_path_str = script_path.to_string_lossy().to_string();
         
         match load_game(&script_path_str) {
             Some(game) => {
@@ -183,9 +359,12 @@ async fn main() {
     }
     
     println!("Starting Cleoselene Server...");
-    println!("Script: {:?}", args.script_path);
+    println!("Script: {:?}", script_path);
     println!("Port: {}", args.port);
     println!("Base Path: {}", args.base_path);
+    if let Some(model) = &args.predictive_model {
+        println!("Predictive Model Enabled: {:?}", model);
+    }
 
     let new_clients_queue = Arc::new(Mutex::new(Vec::new()));
     
@@ -200,14 +379,14 @@ async fn main() {
 
     // Start the Global Game Loop
     let queue_clone = new_clients_queue.clone();
-    let script_path = args.script_path.clone();
+    let script_path_clone = script_path.clone();
     
     thread::spawn(move || {
-        game_loop(queue_clone, script_path, rx_debug);
+        game_loop(queue_clone, script_path_clone, rx_debug);
     });
 
     // Determine assets dir (parent of script)
-    let assets_dir = args.script_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let assets_dir = script_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     
     // Generate unique ID for this server process run
     let instance_id = Uuid::new_v4().to_string();
@@ -222,6 +401,7 @@ async fn main() {
         instance_id,
         tx_debug,
         sys: Arc::new(Mutex::new(sys)),
+        predictive_model_path: args.predictive_model,
     });
 
     let app = Router::new()
@@ -229,6 +409,7 @@ async fn main() {
         .route("/mcp", post(mcp_handler))
         .route("/", get(serve_index))
         .route("/index.html", get(serve_index))
+        .route("/model.bin", get(serve_model))
         .nest_service("/assets", ServeDir::new(assets_dir))
         .fallback(static_handler)
         .layer(TraceLayer::new_for_http())
@@ -694,10 +875,13 @@ async fn serve_index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Some(content) => {
             let body = std::str::from_utf8(content.data.as_ref()).unwrap();
             
+            let has_model = state.predictive_model_path.is_some();
+
             // Inject Config
             let config_script = format!(
-                "<script>window.CLEOSELENE_CONFIG = {{ basePath: '{}' }};</script>",
-                state.base_path.trim_end_matches('/')
+                "<script>window.CLEOSELENE_CONFIG = {{ basePath: '{}', hasModel: {} }};</script>",
+                state.base_path.trim_end_matches('/'),
+                has_model
             );
             
             // Inject Mobile Controls
@@ -713,6 +897,20 @@ async fn serve_index(State(state): State<Arc<AppState>>) -> impl IntoResponse {
             ).into_response()
         },
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn serve_model(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    if let Some(path) = &state.predictive_model_path {
+        match std::fs::read(path) {
+            Ok(bytes) => (
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                bytes
+            ).into_response(),
+            Err(_) => StatusCode::NOT_FOUND.into_response()
+        }
+    } else {
+        StatusCode::NOT_FOUND.into_response()
     }
 }
 
@@ -1095,11 +1293,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
                     let data = bytes::Bytes::from(compressed);
                     
                     // Check DC
-                    let dc_opt = active_dc_sender.lock().await.clone();
-                    let mut sent_via_udp = false;
+                    let _dc_opt = active_dc_sender.lock().await.clone(); // Unused now
+                    let sent_via_udp = false; // FORCE FALSE to use TCP/WS
                     
+                    /* WEBRTC DISABLED FOR STABILITY
                     if let Some(dc) = dc_opt {
-                         // Only try if actually Open
                          if dc.ready_state() == webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
                              if let Err(_e) = dc.send(&data).await {
                                  // eprintln!("WebRTC Send Error: {}", _e);
@@ -1108,6 +1306,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, requested_se
                              }
                          }
                     } 
+                    */
                     
                     if !sent_via_udp {
                          // Fallback TCP

@@ -149,6 +149,9 @@
     <!-- Mobile Controls Overlay (Injected by Server) -->
     <!-- MOBILE_CONTROLS -->
     
-    <script type="module" src="main.js"></script>
+    <script type="module">
+        import init from './pkg/client.js';
+        init().catch(console.error);
+    </script>
 </body>
 </html>

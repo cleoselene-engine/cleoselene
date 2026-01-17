@@ -1,0 +1,81 @@
+[package]
+name = "client"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1.7"
+engine = { path = "../engine", features = [] } 
+candle-core = { version = "0.8.2" }
+candle-nn = { version = "0.8.2" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+js-sys = "0.3"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+byteorder = "1.5"
+anyhow = "1.0"
+# Using 'ruzstd' for decompression
+ruzstd = "0.7"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "console",
+    "Window",
+    "Document",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "WebSocket",
+    "MessageEvent",
+    "BinaryType",
+    "RtcPeerConnection",
+    "RtcConfiguration",
+    "RtcDataChannel",
+    "RtcDataChannelInit",
+    "RtcSessionDescription",
+    "RtcSessionDescriptionInit",
+    "RtcSdpType",
+    "RtcIceCandidate",
+    "RtcIceServer",
+    "RtcIceCandidateInit",
+    "RtcIceConnectionState",
+    "RtcSignalingState",
+    "RtcPeerConnectionIceEvent",
+    "RtcDataChannelState",
+    "AudioContextState",
+    "AudioContext",
+    "AudioBuffer",
+    "AudioBufferSourceNode",
+    "GainNode",
+    "AudioDestinationNode",
+    "AudioParam",
+    "HtmlImageElement",
+    "Performance",
+    "Element",
+    "Event",
+    "KeyboardEvent",
+    "MouseEvent",
+    "Touch",
+    "TouchEvent",
+    "TouchList",
+    "Url",
+    "UrlSearchParams",
+    "Location",
+    "History",
+    "Blob",
+    "Response",
+    "Request",
+    "RequestInit",
+    "Headers",
+    "CssStyleDeclaration",
+    "DomTokenList",
+]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
