@@ -611,7 +611,9 @@ name = "cleoselene"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "anyhow",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "clap",
  "dashmap",

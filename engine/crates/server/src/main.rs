@@ -21,7 +21,7 @@ use clap::Parser;
 use rust_embed::RustEmbed;
 use axum::http::{header, StatusCode, Uri};
 use sysinfo::{System, Networks, RefreshKind, CpuRefreshKind, MemoryRefreshKind};
-use image::{ImageBuffer, RgbImage, Rgba};
+use image::{ImageBuffer, RgbImage, Rgba, Rgb};
 use imageproc::drawing::{draw_line_segment_mut, draw_filled_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
 use std::collections::HashMap;
@@ -215,7 +215,7 @@ async fn main() {
     let instance_id = Uuid::new_v4().to_string();
     println!("Server Instance ID: {}", instance_id);
 
-    let sys = System::new_with_specifics(RefreshKind::new().with_cpu(CpuRefreshKind::everything()).with_memory(MemoryRefreshKind::everything()));
+    let sys = System::new_with_specifics(RefreshKind::nothing().with_cpu(CpuRefreshKind::everything()).with_memory(MemoryRefreshKind::everything()));
 
     let app_state = Arc::new(AppState {
         new_clients: new_clients_queue,
@@ -334,7 +334,7 @@ async fn mcp_handler(State(state): State<Arc<AppState>>, Json(payload): Json<Mcp
         McpRequest::Inspect => {
             let mut sys = state.sys.lock().unwrap();
             sys.refresh_all();
-            let cpu_usage = sys.global_cpu_info().cpu_usage();
+            let cpu_usage = sys.global_cpu_usage();
             let memory_used = sys.used_memory();
             let memory_total = sys.total_memory();
             

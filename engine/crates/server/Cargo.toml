@@ -30,6 +30,8 @@ image = "0.25.9"
 rusttype = "0.9.3"
 ab_glyph = "0.2.32"
 imageproc = "0.26.0"
+base64 = "0.22.1"
+anyhow = "1.0.100"
 
 [dev-dependencies]
 tokio-tungstenite = "0.28.0"
