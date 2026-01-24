@@ -8,7 +8,7 @@ local insert = table.insert
 local remove = table.remove
 
 function M.generate()
-    print("Generating Organic Mesh...")
+    print("Generating Organic Mesh... Grid: " .. Config.GRID_W .. "x" .. Config.GRID_H .. " Scale: " .. Config.BASE_SIZE)
     
     -- Reset State
     State.walls = {}
