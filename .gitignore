@@ -43,18 +43,3 @@ server_ip.txt
 .gemini*
 
 .cleoselene-mcp
-
-# ML Data & Models
-ml/
-*.bin
-
-# Diagnostics & Temp
-diagnostic.png
-mcp_render.json
-diagnose.js
-model.bin
-
-# Node.js
-node_modules/
-package-lock.json
-package.json

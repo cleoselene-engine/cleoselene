@@ -146,16 +146,6 @@ function update(dt)
         p.y = p.y + p.vy * dt
         p.vx = p.vx * 0.96
         p.vy = p.vy * 0.96
-        
-        -- Physics Safety Cap
-        local max_v = 800
-        if p.vx > max_v then p.vx = max_v elseif p.vx < -max_v then p.vx = -max_v end
-        if p.vy > max_v then p.vy = max_v elseif p.vy < -max_v then p.vy = -max_v end
-        
-        -- NaN Protection
-        if p.x ~= p.x then p.x = 100; p.vx = 0 end
-        if p.y ~= p.y then p.y = 100; p.vy = 0 end
-        
         if p.phys_id then State.db:update(p.phys_id, p.x, p.y) end
         
         -- Dash Logic

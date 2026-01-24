@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-engine = { path = "../engine", features = ["lua"] }
+engine = { path = "../engine" }
 axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1.0", features = ["full"] }
 tower-http = { version = "0.5", features = ["fs", "trace"] }
@@ -32,11 +32,6 @@ ab_glyph = "0.2.32"
 imageproc = "0.26.0"
 base64 = "0.22.1"
 anyhow = "1.0.100"
-candle-core = { version = "0.8.2", features = ["metal"] }
-candle-nn = { version = "0.8.2", features = ["metal"] }
-byteorder = "1.5.0"
-rand = "0.8.5"
-rayon = "1.8"
 
 [dev-dependencies]
 tokio-tungstenite = "0.28.0"
