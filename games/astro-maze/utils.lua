@@ -1,12 +1,36 @@
+local Config = require("config")
 local State = require("state")
 local M = {}
 
 local sqrt = math.sqrt
 local floor = math.floor
+local abs = math.abs
 local ipairs = ipairs
 
+-- Toroidal Distance
 function M.dist_sq(x1, y1, x2, y2)
-    return (x1-x2)^2 + (y1-y2)^2
+    local dx = abs(x1 - x2)
+    local dy = abs(y1 - y2)
+    
+    if dx > Config.SCREEN_W / 2 then dx = Config.SCREEN_W - dx end
+    if dy > Config.SCREEN_H / 2 then dy = Config.SCREEN_H - dy end
+    
+    return dx*dx + dy*dy
+end
+
+-- Get Shortest Vector (Toroidal) - from x1,y1 TO x2,y2
+function M.get_vector(x1, y1, x2, y2)
+    local dx = x2 - x1
+    local dy = y2 - y1
+    local hw, hh = Config.SCREEN_W/2, Config.SCREEN_H/2
+    
+    if dx > hw then dx = dx - Config.SCREEN_W
+    elseif dx < -hw then dx = dx + Config.SCREEN_W end
+    
+    if dy > hh then dy = dy - Config.SCREEN_H
+    elseif dy < -hh then dy = dy + Config.SCREEN_H end
+    
+    return dx, dy
 end
 
 function M.closest_point_on_segment(px, py, x1, y1, x2, y2)

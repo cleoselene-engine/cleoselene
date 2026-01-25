@@ -95,21 +95,8 @@ function M.generate()
         end
     end
     
-    -- Border Walls
-    for x=0, Config.GRID_W-1 do
-        local w1={x1=verts[0][x].x, y1=verts[0][x].y, x2=verts[0][x+1].x, y2=verts[0][x+1].y, type="wall"}
-        insert(State.walls,w1); Entities.register(w1,"segment",w1.x2,w1.y2,"wall")
-        
-        local w2={x1=verts[Config.GRID_H][x].x, y1=verts[Config.GRID_H][x].y, x2=verts[Config.GRID_H][x+1].x, y2=verts[Config.GRID_H][x+1].y, type="wall"}
-        insert(State.walls,w2); Entities.register(w2,"segment",w2.x2,w2.y2,"wall")
-    end
-    for y=0, Config.GRID_H-1 do
-        local w1={x1=verts[y][0].x, y1=verts[y][0].y, x2=verts[y+1][0].x, y2=verts[y+1][0].y, type="wall"}
-        insert(State.walls,w1); Entities.register(w1,"segment",w1.x2,w1.y2,"wall")
-        
-        local w2={x1=verts[y][Config.GRID_W].x, y1=verts[y][Config.GRID_W].y, x2=verts[y+1][Config.GRID_W].x, y2=verts[y+1][Config.GRID_W].y, type="wall"}
-        insert(State.walls,w2); Entities.register(w2,"segment",w2.x2,w2.y2,"wall")
-    end
+    -- Border Walls REMOVED for Infinite Map logic
+    -- (Walls were here previously)
 
     -- Doors & Keys
     for i=1, 40 do 

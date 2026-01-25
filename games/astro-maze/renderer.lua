@@ -24,6 +24,58 @@ local function draw_symbol(cx, cy, type)
     end
 end
 
+-- Helper to draw a player
+local function draw_player(p, tx_fn, ty_fn)
+    local sx, sy = 0, 0
+    if p.shake_timer and p.shake_timer > 0 then 
+        sx, sy = (math.random()-0.5)*6, (math.random()-0.5)*6 
+    end
+    
+    local dpx, dpy = p.x+sx, p.y+sy
+    local vis = true
+    
+    -- Damage Blink (Invisibility)
+    if p.damage_timer and p.damage_timer > 0 and floor(p.damage_timer*30)%2 == 0 then vis = false end
+    
+    if vis then
+        local cr, cg, cb = p.color.r, p.color.g, p.color.b
+        -- Low Health Flash (Red)
+        if p.hp < 30 and p.low_health_timer and p.low_health_timer > 1.8 then cr, cg, cb = 255, 0, 0 end
+        api.set_color(cr, cg, cb)
+        
+        local r = p.angle * (pi/180)
+        local c, s = cos(r), sin(r)
+        local xA, yA = 14*c, 14*s
+        local xB, yB = -10*c+7*s, -10*s-7*c
+        local xC, yC = -10*c-7*s, -10*s+7*c
+        
+        local px, py = tx_fn(dpx), ty_fn(dpy)
+        
+        -- Need to transform relative points too? No, tx is translation. Rotation is local.
+        -- Wait, draw_line takes absolute screen coords.
+        -- So tx(dpx+xA) = tx(dpx) + xA (since tx is linear except for wrap offset)
+        -- Yes, tx is linear within the drawing window.
+        
+        api.draw_line(tx_fn(dpx+xA), ty_fn(dpy+yA), tx_fn(dpx+xB), ty_fn(dpy+yB))
+        api.draw_line(tx_fn(dpx+xB), ty_fn(dpy+yB), tx_fn(dpx+xC), ty_fn(dpy+yC))
+        api.draw_line(tx_fn(dpx+xC), ty_fn(dpy+yC), tx_fn(dpx+xA), ty_fn(dpy+yA))
+        
+        if p.blink_timer and p.blink_timer > 0 then 
+            api.set_color(255, 255, 255, 100)
+            api.draw_line(tx_fn(dpx+xA), ty_fn(dpy+yA), tx_fn(dpx+xB), ty_fn(dpy+yB))
+            api.draw_line(tx_fn(dpx+xB), ty_fn(dpy+yB), tx_fn(dpx+xC), ty_fn(dpy+yC))
+            api.draw_line(tx_fn(dpx+xC), ty_fn(dpy+yC), tx_fn(dpx+xA), ty_fn(dpy+yA)) 
+        end
+    end
+    
+    for i=1,4 do 
+        if p.keys[i] then 
+            api.set_color(Config.COLORS[i][1], Config.COLORS[i][2], Config.COLORS[i][3])
+            api.fill_rect(tx_fn(dpx)-15+i*6, ty_fn(dpy)+20, 4, 4) 
+        end 
+    end
+end
+
 function M.draw(session_id)
     if not State.db then return end
     api.clear_screen(8, 8, 12)
@@ -53,7 +105,7 @@ function M.draw(session_id)
         end 
     end
 
-    -- Spatial Audio
+    -- Spatial Audio (Wrapped)
     for _, snd in ipairs(State.frame_sounds) do
         local d = sqrt(Utils.dist_sq(me.x, me.y, snd.x, snd.y))
         local vol = 1.0 - (d / 1000)
@@ -64,91 +116,110 @@ function M.draw(session_id)
     end
 
     local cam_x, cam_y = me.x - Config.VIEW_W/2, me.y - Config.VIEW_H/2
-    local function tx(x) return x - cam_x end
-    local function ty(y) return y - cam_y end
+    local half_world_w, half_world_h = Config.SCREEN_W/2, Config.SCREEN_H/2
     
-    local visible_ids = State.db:query_rect(cam_x - 50, cam_y - 50, cam_x + Config.VIEW_W + 50, cam_y + Config.VIEW_H + 50, nil)
+    -- Transform World Coord to Screen Coord (Modular)
+    local function tx(x) 
+        local dx = x - me.x
+        if dx > half_world_w then dx = dx - Config.SCREEN_W
+        elseif dx < -half_world_w then dx = dx + Config.SCREEN_W end
+        return Config.VIEW_W/2 + dx
+    end
     
-    for _, id in ipairs(visible_ids) do
-        local obj = State.entity_map[id]
-        if obj then
-            if obj.type == "wall" or obj.type == "door" then
-                if not obj.open then 
-                    if obj.type == "door" then 
-                        local c = Config.COLORS[obj.color_id]
-                        api.set_color(c[1], c[2], c[3]) 
-                    else 
-                        api.set_color(120, 120, 150) 
-                    end
-                    api.draw_line(tx(obj.x1), ty(obj.y1), tx(obj.x2), ty(obj.y2), 1) 
-                end
-            elseif obj.active and not obj.inputs then -- Enemy
-                local ex, ey = obj.x, obj.y
-                if obj.shake_timer and obj.shake_timer > 0 then
-                    ex = ex + (math.random() - 0.5) * 6
-                    ey = ey + (math.random() - 0.5) * 6
-                end
+    local function ty(y) 
+        local dy = y - me.y
+        if dy > half_world_h then dy = dy - Config.SCREEN_H
+        elseif dy < -half_world_h then dy = dy + Config.SCREEN_H end
+        return Config.VIEW_H/2 + dy
+    end
+    
+    -- Multi-query for wrapping visibility
+    local queries = {}
+    local pad = 100
+    -- Primary Query
+    table.insert(queries, {l=cam_x - pad, t=cam_y - pad, r=cam_x + Config.VIEW_W + pad, b=cam_y + Config.VIEW_H + pad})
+    
+    -- Wrapped Queries
+    local wx, wy = nil, nil
 
-                if obj.owner_p then 
-                    api.set_color(obj.color.r, obj.color.g, obj.color.b) 
-                else 
-                    api.set_color(255, 0, 0) 
-                end
-                
-                local visual_r = 15 -- Keep visuals small
-                local pts = (obj.points or 5) * 2
-                local inner_r = visual_r * 0.4
-                local outer_r = visual_r
-                local lx, ly
-                
-                for i=0, pts do 
-                    local a = (i/pts)*pi2+(obj.spin or 0)
-                    local r = (i%2==0) and outer_r or inner_r
-                    local px, py = ex + cos(a)*r, ey + sin(a)*r
-                    if i > 0 then api.draw_line(tx(lx), ty(ly), tx(px), ty(py), 2) end
-                    lx, ly = px, py 
-                end
-            elseif obj.inputs then -- Player
-                local p = obj
-                local sx, sy = 0, 0
-                if p.shake_timer and p.shake_timer > 0 then 
-                    sx, sy = (math.random()-0.5)*6, (math.random()-0.5)*6 
-                end
-                
-                local dpx, dpy, vis = p.x+sx, p.y+sy, true
-                
-                -- Damage Blink (Invisibility)
-                if p.damage_timer and p.damage_timer > 0 and floor(p.damage_timer*30)%2 == 0 then vis = false end
-                
-                if vis then
-                    local cr, cg, cb = p.color.r, p.color.g, p.color.b
-                    -- Low Health Flash (Red)
-                    if p.hp < 30 and p.low_health_timer and p.low_health_timer > 1.8 then cr, cg, cb = 255, 0, 0 end
-                    api.set_color(cr, cg, cb)
-                    
-                    local r = p.angle * (pi/180)
-                    local c, s = cos(r), sin(r)
-                    local xA, yA = 14*c, 14*s
-                    local xB, yB = -10*c+7*s, -10*s-7*c
-                    local xC, yC = -10*c-7*s, -10*s+7*c
-                    
-                    api.draw_line(tx(dpx+xA), ty(dpy+yA), tx(dpx+xB), ty(dpy+yB))
-                    api.draw_line(tx(dpx+xB), ty(dpy+yB), tx(dpx+xC), ty(dpy+yC))
-                    api.draw_line(tx(dpx+xC), ty(dpy+yC), tx(dpx+xA), ty(dpy+yA))
-                    
-                    if p.blink_timer and p.blink_timer > 0 then 
-                        api.set_color(255, 255, 255, 100)
-                        api.draw_line(tx(dpx+xA), ty(dpy+yA), tx(dpx+xB), ty(dpy+yB))
-                        api.draw_line(tx(dpx+xB), ty(dpy+yB), tx(dpx+xC), ty(dpy+yC))
-                        api.draw_line(tx(dpx+xC), ty(dpy+yC), tx(dpx+xA), ty(dpy+yA)) 
+    -- Check Left/Right Wrap
+    if cam_x < 0 then
+        wx = {l=Config.SCREEN_W + cam_x - pad, r=Config.SCREEN_W + pad}
+    elseif cam_x + Config.VIEW_W > Config.SCREEN_W then
+        wx = {l=-pad, r=(cam_x + Config.VIEW_W - Config.SCREEN_W) + pad}
+    end
+    
+    if wx then
+        table.insert(queries, {l=wx.l, t=cam_y - pad, r=wx.r, b=cam_y + Config.VIEW_H + pad})
+    end
+    
+    -- Check Top/Bottom Wrap
+    if cam_y < 0 then
+        wy = {t=Config.SCREEN_H + cam_y - pad, b=Config.SCREEN_H + pad}
+    elseif cam_y + Config.VIEW_H > Config.SCREEN_H then
+        wy = {t=-pad, b=(cam_y + Config.VIEW_H - Config.SCREEN_H) + pad}
+    end
+
+    if wy then
+        table.insert(queries, {l=cam_x - pad, t=wy.t, r=cam_x + Config.VIEW_W + pad, b=wy.b})
+    end
+
+    -- Diagonal Query (Corner Case)
+    if wx and wy then
+        table.insert(queries, {l=wx.l, t=wy.t, r=wx.r, b=wy.b})
+    end
+
+    local drawn_ids = {} -- avoid duplicates from overlapping queries
+    
+    -- EXPLICITLY DRAW ME (THE PLAYER) FIRST OR LAST TO ENSURE VISIBILITY
+    -- We draw me last (on top of map)
+    
+    for _, q in ipairs(queries) do
+        local visible_ids = State.db:query_rect(q.l, q.t, q.r, q.b, nil)
+        for _, id in ipairs(visible_ids) do
+            if not drawn_ids[id] then
+                drawn_ids[id] = true
+                local obj = State.entity_map[id]
+                if obj and obj ~= me then -- Skip me here, draw later
+                    if obj.type == "wall" or obj.type == "door" then
+                        if not obj.open then 
+                            if obj.type == "door" then 
+                                local c = Config.COLORS[obj.color_id]
+                                api.set_color(c[1], c[2], c[3]) 
+                            else 
+                                api.set_color(120, 120, 150) 
+                            end
+                            api.draw_line(tx(obj.x1), ty(obj.y1), tx(obj.x2), ty(obj.y2), 1) 
+                        end
+                    elseif obj.active and not obj.inputs then -- Enemy
+                        local ex, ey = obj.x, obj.y
+                        if obj.shake_timer and obj.shake_timer > 0 then
+                            ex = ex + (math.random() - 0.5) * 6
+                            ey = ey + (math.random() - 0.5) * 6
+                        end
+
+                        if obj.owner_p then 
+                            api.set_color(obj.color.r, obj.color.g, obj.color.b) 
+                        else 
+                            api.set_color(255, 0, 0) 
+                        end
+                        
+                        local visual_r = 15 -- Keep visuals small
+                        local pts = (obj.points or 5) * 2
+                        local inner_r = visual_r * 0.4
+                        local outer_r = visual_r
+                        local lx, ly
+                        
+                        for i=0, pts do 
+                            local a = (i/pts)*pi2+(obj.spin or 0)
+                            local r = (i%2==0) and outer_r or inner_r
+                            local px, py = ex + cos(a)*r, ey + sin(a)*r
+                            if i > 0 then api.draw_line(tx(lx), ty(ly), tx(px), ty(py), 2) end
+                            lx, ly = px, py 
+                        end
+                    elseif obj.inputs then -- Other Player
+                        draw_player(obj, tx, ty)
                     end
-                end
-                
-                for i=1,4 do 
-                    if p.keys[i] then 
-                        api.set_color(Config.COLORS[i][1], Config.COLORS[i][2], Config.COLORS[i][3])
-                        api.fill_rect(tx(dpx)-15+i*6, ty(dpy)+20, 4, 4) 
-                    end 
                 end
             end
         end
@@ -176,9 +247,11 @@ function M.draw(session_id)
     
     api.set_color(80, 80, 80)
     for _, a in ipairs(State.asteroids) do 
-        if a.x > cam_x-50 and a.x < cam_x+Config.VIEW_W+50 then 
-            api.fill_rect(tx(a.x)-a.radius, ty(a.y)-a.radius, a.radius*2, a.radius*2) 
-        end 
+        -- Optimization: Only draw asteroid if roughly on screen (using new tx/ty)
+        local sx, sy = tx(a.x), ty(a.y)
+        if sx > -100 and sx < Config.VIEW_W + 100 and sy > -100 and sy < Config.VIEW_H + 100 then
+            api.fill_rect(sx-a.radius, sy-a.radius, a.radius*2, a.radius*2) 
+        end
     end
     
     for _, s in ipairs(State.shots) do 
@@ -258,6 +331,9 @@ function M.draw(session_id)
             lx, ly = px, py 
         end 
     end
+    
+    -- DRAW ME EXPLICITLY
+    draw_player(me, tx, ty)
     
     -- UI
     -- HP

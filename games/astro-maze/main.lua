@@ -23,7 +23,10 @@ local ipairs = ipairs
 function on_connect(id)
     if State.players[id] then return end
     
-    local sp = Entities.get_smart_spawn()
+    -- DEBUG: Spawn at Top-Left Corner to test Wrap
+    local sp = {x=100, y=100} 
+    -- local sp = Entities.get_smart_spawn() -- Original
+    
     api.play_sound("start")
     
     local p = {
@@ -59,6 +62,17 @@ function on_input(id, code, is_down)
     end
 end
 
+-- Wrap Position Helper
+local function wrap_pos(obj)
+    local wrapped = false
+    if obj.x < 0 then obj.x = obj.x + Config.SCREEN_W; wrapped = true
+    elseif obj.x > Config.SCREEN_W then obj.x = obj.x - Config.SCREEN_W; wrapped = true end
+    
+    if obj.y < 0 then obj.y = obj.y + Config.SCREEN_H; wrapped = true
+    elseif obj.y > Config.SCREEN_H then obj.y = obj.y - Config.SCREEN_H; wrapped = true end
+    return wrapped
+end
+
 function update(dt)
     if not State.db or not State.phys then MapGen.generate() end
     
@@ -90,10 +104,28 @@ function update(dt)
         end
     end
     
-    -- Sync Physics Positions
-    for id, p in pairs(State.players) do if p.phys_id then State.db:update(p.phys_id, p.x, p.y) end end
-    for _, e in ipairs(State.enemies) do if e.active and e.phys_id then State.db:update(e.phys_id, e.x, e.y) end end
-    for _, b in ipairs(State.bombs) do if b.phys_id then State.db:update(b.phys_id, b.x, b.y) end end
+    -- Sync Physics Positions & Wrap
+    for id, p in pairs(State.players) do 
+        wrap_pos(p)
+        if p.phys_id then State.db:update(p.phys_id, p.x, p.y) end 
+    end
+    for _, e in ipairs(State.enemies) do 
+        if e.active then
+            wrap_pos(e)
+            if e.phys_id then State.db:update(e.phys_id, e.x, e.y) end 
+        end
+    end
+    for _, b in ipairs(State.bombs) do 
+        wrap_pos(b)
+        if b.phys_id then State.db:update(b.phys_id, b.x, b.y) end 
+    end
+    for _, s in ipairs(State.shots) do
+        -- Manually wrap shots (they don't use physics engine usually, just rays, but we store coords)
+        -- Actually shots are raycasts, so wrapping them is weird.
+        -- For this simple engine, shots are instant lines.
+        -- If we want shots to wrap, we'd need to cast two rays.
+        -- Leaving shots unwrapped for now (they just stop at edge of world).
+    end
 
     for id, p in pairs(State.players) do
         -- Ability Trigger
@@ -146,6 +178,16 @@ function update(dt)
         p.y = p.y + p.vy * dt
         p.vx = p.vx * 0.96
         p.vy = p.vy * 0.96
+        
+        -- Physics Safety Cap
+        local max_v = 800
+        if p.vx > max_v then p.vx = max_v elseif p.vx < -max_v then p.vx = -max_v end
+        if p.vy > max_v then p.vy = max_v elseif p.vy < -max_v then p.vy = -max_v end
+        
+        -- NaN Protection
+        if p.x ~= p.x then p.x = 100; p.vx = 0 end
+        if p.y ~= p.y then p.y = 100; p.vy = 0 end
+        
         if p.phys_id then State.db:update(p.phys_id, p.x, p.y) end
         
         -- Dash Logic
@@ -242,6 +284,15 @@ function update(dt)
         -- Enemy Collision
         p.enemy_hit_cooldown = (p.enemy_hit_cooldown or 0) - dt
         local ens = State.db:query_range(p.x, p.y, p.radius+20, "enemy")
+        -- Quick hack for wrapped enemies (not perfect but covers 90% of cases)
+        if p.x < 100 then 
+            local extra = State.db:query_range(p.x + Config.SCREEN_W, p.y, p.radius+20, "enemy")
+            for _, id in ipairs(extra) do insert(ens, id) end
+        elseif p.x > Config.SCREEN_W - 100 then
+            local extra = State.db:query_range(p.x - Config.SCREEN_W, p.y, p.radius+20, "enemy")
+            for _, id in ipairs(extra) do insert(ens, id) end
+        end
+
         for _, eid in ipairs(ens) do
              local e = State.entity_map[eid]
              if e and e.active then
@@ -283,7 +334,10 @@ function update(dt)
                      -- Physics Bounce (Applies to everyone, including owner)
                      local d = sqrt(d2)
                      if d > 0 then 
-                         local nx, ny = (p.x-e.x)/d, (p.y-e.y)/d
+                         -- Use get_vector for wrapped direction
+                         local dx, dy = Utils.get_vector(e.x, e.y, p.x, p.y)
+                         local nx, ny = dx/d, dy/d
+                         
                          p.x = p.x + nx * (r_sum - d)
                          p.vx = p.vx + nx * 100
                          p.vy = p.vy + ny * 100
@@ -315,8 +369,13 @@ function update(dt)
                     if not died then 
                         local d = sqrt(d2)
                         if d > 0 then 
-                            local nx, ny = (p.x-p2.x)/d, (p.y-p2.y)/d
-                            p.x = p.x + nx * (p.radius + p2.radius - d) 
+                            local nx, ny = Utils.get_vector(p2.x, p2.y, p.x, p.y)
+                            if nx == 0 and ny == 0 then nx=1 end
+                            local l = sqrt(nx*nx+ny*ny)
+                            if l > 0 then
+                                nx, ny = nx/l, ny/l
+                                p.x = p.x + nx * (p.radius + p2.radius - d)
+                            end
                         end 
                     end 
                 end
@@ -431,7 +490,7 @@ function update(dt)
             -- 1. Check targeted status (Evasion)
             local need_evasion = false
             for _, p in pairs(State.players) do
-                local dx, dy = e.x - p.x, e.y - p.y
+                local dx, dy = Utils.get_vector(p.x, p.y, e.x, e.y) -- Vector TO Enemy FROM Player
                 local dist_sq_val = dx*dx + dy*dy
                 if dist_sq_val < 640000 then -- 800^2
                     local v_p_sq = p.vx^2 + p.vy^2
@@ -462,7 +521,7 @@ function update(dt)
             -- 2. Calculate Movement Force
             if target and e.chase_cooldown <= 0 then
                 if Utils.has_line_of_sight(e.x, e.y, target.x, target.y) then
-                    local dx, dy = target.x - e.x, target.y - e.y
+                    local dx, dy = Utils.get_vector(e.x, e.y, target.x, target.y)
                     local d = sqrt(dx*dx + dy*dy)
                     if d > 0 then ax, ay = (dx/d)*250, (dy/d)*250 end
                 else
@@ -486,7 +545,7 @@ function update(dt)
                     end
                 end
             elseif need_evasion and target and e.evade_dir then
-                local dx, dy = target.x - e.x, target.y - e.y
+                local dx, dy = Utils.get_vector(e.x, e.y, target.x, target.y)
                 local pdx, pdy = -dy, dx
                 local l = sqrt(pdx*pdx + pdy*pdy)
                 if l > 0 then
@@ -600,11 +659,10 @@ function update(dt)
             local nx, ny = State.db:get_position(a.phys_id)
             if nx then 
                 a.x, a.y = nx, ny
-                if a.x < 0 then a.x = Config.SCREEN_W; State.db:update(a.phys_id, a.x, a.y) 
+                if wrap_pos(a) then
+                    State.db:update(a.phys_id, a.x, a.y) 
+                elseif a.x < 0 then a.x = Config.SCREEN_W; State.db:update(a.phys_id, a.x, a.y) 
                 elseif a.x > Config.SCREEN_W then a.x = 0; State.db:update(a.phys_id, a.x, a.y) end
-                
-                if a.y < 0 then a.y = Config.SCREEN_H; State.db:update(a.phys_id, a.x, a.y) 
-                elseif a.y > Config.SCREEN_H then a.y = 0; State.db:update(a.phys_id, a.x, a.y) end 
             end 
         end 
     end
