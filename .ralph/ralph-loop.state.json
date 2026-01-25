@@ -1,0 +1,13 @@
+{
+  "active": true,
+  "iteration": 1,
+  "minIterations": 1,
+  "maxIterations": 0,
+  "completionPromise": "COMPLETE",
+  "tasksMode": false,
+  "taskPromise": "READY_FOR_NEXT_TASK",
+  "prompt": "O jogo astro maze está com erro na renderização, o player não está aparecendo na tela, nem o fundo quadriculado. O erro foi causado pelas modificações que fizemos pra adicionar raycast pra deixar somente visível ao player o que não tiver parede no meio",
+  "startedAt": "2026-01-25T14:51:48.447Z",
+  "model": "",
+  "agent": "opencode"
+}
