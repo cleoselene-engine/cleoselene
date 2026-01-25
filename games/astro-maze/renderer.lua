@@ -133,6 +133,26 @@ function M.draw(session_id)
         return Config.VIEW_H/2 + dy
     end
     
+    -- Draw Background Grid
+    local grid_sz = 250
+    api.set_color(25, 25, 40)
+    
+    local start_x = floor((me.x - Config.VIEW_W/2)/grid_sz) * grid_sz
+    local end_x = start_x + Config.VIEW_W + grid_sz
+    for cx = start_x, end_x, grid_sz do
+        local nx = cx % Config.SCREEN_W
+        local sx = tx(nx)
+        api.draw_line(sx, 0, sx, Config.VIEW_H, 1)
+    end
+    
+    local start_y = floor((me.y - Config.VIEW_H/2)/grid_sz) * grid_sz
+    local end_y = start_y + Config.VIEW_H + grid_sz
+    for cy = start_y, end_y, grid_sz do
+        local ny = cy % Config.SCREEN_H
+        local sy = ty(ny)
+        api.draw_line(0, sy, Config.VIEW_W, sy, 1)
+    end
+
     -- Multi-query for wrapping visibility
     local queries = {}
     local pad = 100
