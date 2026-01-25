@@ -133,24 +133,32 @@ function M.draw(session_id)
         return Config.VIEW_H/2 + dy
     end
     
-    -- Draw Background Grid
+    -- Draw Background Grid (Checkerboard)
     local grid_sz = 250
-    api.set_color(25, 25, 40)
     
     local start_x = floor((me.x - Config.VIEW_W/2)/grid_sz) * grid_sz
     local end_x = start_x + Config.VIEW_W + grid_sz
-    for cx = start_x, end_x, grid_sz do
-        local nx = cx % Config.SCREEN_W
-        local sx = tx(nx)
-        api.draw_line(sx, 0, sx, Config.VIEW_H, 1)
-    end
     
     local start_y = floor((me.y - Config.VIEW_H/2)/grid_sz) * grid_sz
     local end_y = start_y + Config.VIEW_H + grid_sz
-    for cy = start_y, end_y, grid_sz do
-        local ny = cy % Config.SCREEN_H
-        local sy = ty(ny)
-        api.draw_line(0, sy, Config.VIEW_W, sy, 1)
+    
+    for cx = start_x, end_x, grid_sz do
+        for cy = start_y, end_y, grid_sz do
+            local ix = floor(cx / grid_sz)
+            local iy = floor(cy / grid_sz)
+            
+            if (ix + iy) % 2 == 0 then
+                api.set_color(30, 30, 50)
+            else
+                api.set_color(45, 45, 75)
+            end
+            
+            local nx = cx % Config.SCREEN_W
+            local ny = cy % Config.SCREEN_H
+            local sx, sy = tx(nx), ty(ny)
+            
+            api.fill_rect(sx, sy, grid_sz + 1, grid_sz + 1)
+        end
     end
 
     -- Multi-query for wrapping visibility
