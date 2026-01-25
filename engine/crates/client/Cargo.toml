@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1.7"
-engine = { path = "../engine", features = [] } 
+engine = { path = "../engine", default-features = false } 
 candle-core = { version = "0.8.2" }
 candle-nn = { version = "0.8.2" }
 serde = { version = "1.0", features = ["derive"] }

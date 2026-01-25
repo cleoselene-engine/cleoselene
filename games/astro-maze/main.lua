@@ -23,16 +23,62 @@ local ipairs = ipairs
 function on_connect(id)
     if State.players[id] then return end
     
-    -- DEBUG: Spawn at Top-Left Corner to test Wrap
-    local sp = {x=100, y=100} 
-    -- local sp = Entities.get_smart_spawn() -- Original
+    local sp
+    
+    -- Check if there are other players
+    local other_players = {}
+    for pid, p in pairs(State.players) do
+        table.insert(other_players, p)
+    end
+    
+    if #other_players == 0 then
+        -- First player: Random start
+        -- If map hasn't generated yet, we might fallback to 0,0 or smart spawn will handle it.
+        -- Assuming spawn_points exist after update() calls MapGen.
+        -- If MapGen runs in update(), it might not be ready here on first frame connect?
+        -- Actually update runs in a loop, connect happens async.
+        -- Safe bet: random coordinate if no spawn points, or wait?
+        -- Let's check State.spawn_points
+        if State.spawn_points and #State.spawn_points > 0 then
+            sp = State.spawn_points[math.random(#State.spawn_points)]
+        else
+            sp = {x=math.random(100, Config.SCREEN_W-100), y=math.random(100, Config.SCREEN_H-100)}
+        end
+    else
+        -- Join near another player (in their view)
+        local target = other_players[math.random(#other_players)]
+        
+        -- Try to find a free spot in their view window (approx 800x600 centered on them)
+        -- Config.VIEW_W/H
+        local found = false
+        if State.db then
+            for i=1, 10 do
+                local rx = target.x + (math.random() - 0.5) * Config.VIEW_W * 0.8
+                local ry = target.y + (math.random() - 0.5) * Config.VIEW_H * 0.8
+                
+                -- Simple bounds check against map walls if possible, or just use it.
+                -- Map collision check:
+                local walls = State.db:query_range(rx, ry, 20, "wall")
+                if #walls == 0 then
+                    sp = {x=rx, y=ry}
+                    found = true
+                    break
+                end
+            end
+        end
+        
+        if not found then
+            -- Fallback to target pos (overlap) or standard spawn
+            sp = {x=target.x, y=target.y}
+        end
+    end
     
     api.play_sound("start")
     
     local p = {
         id=id, 
         x=sp.x, y=sp.y, 
-        angle=0, vx=0, vy=0, radius=12, 
+        angle=math.random() * 360, vx=0, vy=0, radius=12, 
         keys={}, inputs={}, 
         color={r=random(100,255), g=random(100,255), b=random(100,255)}, 
         last_shot_timer=2, hp=100, active_ability="laser"

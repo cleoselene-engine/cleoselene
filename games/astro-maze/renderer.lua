@@ -189,7 +189,14 @@ function M.draw(session_id)
         table.insert(queries, {l=wx.l, t=wy.t, r=wx.r, b=wy.b})
     end
 
-    local drawn_ids = {} -- avoid duplicates from overlapping queries
+    -- SHADOW CASTING (Fog of War)
+    local cx, cy = Config.VIEW_W/2, Config.VIEW_H/2
+    local segments = {}
+    local wall_ids = {}
+    
+    -- Add Screen Borders as Segments (to catch rays)
+    
+    local drawn_ids = {}
     
     -- EXPLICITLY DRAW ME (THE PLAYER) FIRST OR LAST TO ENSURE VISIBILITY
     -- We draw me last (on top of map)

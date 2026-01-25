@@ -1,5 +1,7 @@
-use candle_core::{Result, Tensor, Device, Module, IndexOp, DType};
-use candle_nn::{VarBuilder, Linear, linear, Embedding, embedding, LayerNorm, layer_norm, Activation, ops};
+use candle_core::{DType, Device, IndexOp, Module, Result, Tensor};
+use candle_nn::{
+    embedding, layer_norm, linear, ops, Activation, Embedding, LayerNorm, Linear, VarBuilder,
+};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -37,7 +39,12 @@ impl CausalSelfAttention {
         let n_head = cfg.num_heads;
         let c_attn = linear(n_embd, 3 * n_embd, vb.pp("c_attn"))?;
         let c_proj = linear(n_embd, n_embd, vb.pp("c_proj"))?;
-        Ok(Self { c_attn, c_proj, n_head, n_embd })
+        Ok(Self {
+            c_attn,
+            c_proj,
+            n_head,
+            n_embd,
+        })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -45,7 +52,7 @@ impl CausalSelfAttention {
         let qkv = self.c_attn.forward(x)?;
         let qkv = qkv.reshape((b, t, 3, self.n_head, c / self.n_head))?;
         let qkv = qkv.transpose(1, 2)?; // (b, 3, t, h, d)
-        
+
         let q = qkv.i((.., 0))?.transpose(1, 2)?.contiguous()?; // (b, h, t, d)
         let k = qkv.i((.., 1))?.transpose(1, 2)?.contiguous()?; // (b, h, t, d)
         let v = qkv.i((.., 2))?.transpose(1, 2)?.contiguous()?; // (b, h, t, d)
@@ -54,13 +61,13 @@ impl CausalSelfAttention {
         let k_t = k.transpose(2, 3)?.contiguous()?; // (b, h, d, t)
         let scale = (c as f64 / self.n_head as f64).sqrt();
         let att = (q.matmul(&k_t)? / scale)?; // (b, h, t, t)
-        
+
         // Causal Mask
         let mask = self.create_mask(t, x.device())?;
         let mask = mask.broadcast_as((b, self.n_head, t, t))?;
         let att = att.broadcast_add(&mask)?;
         let att = ops::softmax(&att, 3)?;
-        
+
         let y = att.matmul(&v)?.contiguous()?; // (b, h, t, d)
         let y = y.transpose(1, 2)?.reshape((b, t, c))?; // (b, t, h, d) -> (b, t, c)
         self.c_proj.forward(&y)
@@ -70,12 +77,12 @@ impl CausalSelfAttention {
         // Create a lower triangular mask
         let i = Tensor::arange(0u32, size as u32, device)?.reshape((size, 1))?;
         let j = Tensor::arange(0u32, size as u32, device)?.reshape((1, size))?;
-        
+
         // Broadcast manually if needed, but usually broadcast_ge handles it.
         // If i.ge(&j) failed, try explicit broadcast.
         let i = i.broadcast_as((size, size))?;
         let j = j.broadcast_as((size, size))?;
-        
+
         let mask = i.ge(&j)?; // Lower triangular boolean
         let mask = mask.to_dtype(DType::F32)?;
         let mask = ((mask * -1.0)? + 1.0)?; // Invert
@@ -116,7 +123,12 @@ impl Block {
         let attn = CausalSelfAttention::new(cfg, vb.pp("attn"))?;
         let ln2 = layer_norm(cfg.hidden_size, 1e-5, vb.pp("ln2"))?;
         let mlp = MLP::new(cfg, vb.pp("mlp"))?;
-        Ok(Self { ln1, attn, ln2, mlp })
+        Ok(Self {
+            ln1,
+            attn,
+            ln2,
+            mlp,
+        })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -139,35 +151,42 @@ impl Transformer {
     pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let wte = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("wte"))?;
         let wpe = embedding(cfg.max_seq_len, cfg.hidden_size, vb.pp("wpe"))?;
-        
+
         let mut blocks = Vec::new();
         for i in 0..cfg.num_layers {
             blocks.push(Block::new(cfg, vb.pp(&format!("blocks.{}", i)))?);
         }
-        
+
         let ln_f = layer_norm(cfg.hidden_size, 1e-5, vb.pp("ln_f"))?;
         let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
 
-        Ok(Self { wte, wpe, blocks, ln_f, lm_head, cfg: cfg.clone() })
+        Ok(Self {
+            wte,
+            wpe,
+            blocks,
+            ln_f,
+            lm_head,
+            cfg: cfg.clone(),
+        })
     }
 
     pub fn forward(&self, idx: &Tensor) -> Result<Tensor> {
         let (_b, t) = idx.dims2()?;
         let pos = Tensor::arange(0u32, t as u32, idx.device())?;
         let pos = pos.reshape((1, t))?;
-        
+
         let tok_emb = self.wte.forward(idx)?;
         let pos_emb = self.wpe.forward(&pos)?;
-        
+
         let mut x = (tok_emb.broadcast_add(&pos_emb))?;
-        
+
         for block in &self.blocks {
             x = block.forward(&x)?;
         }
-        
+
         let x = self.ln_f.forward(&x)?;
         let logits = self.lm_head.forward(&x)?;
-        
+
         Ok(logits)
     }
 }

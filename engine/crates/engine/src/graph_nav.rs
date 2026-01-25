@@ -1,5 +1,5 @@
-use std::collections::{HashMap, BinaryHeap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 // --- Estruturas para A* ---
 
@@ -15,7 +15,10 @@ impl Eq for State {}
 impl Ord for State {
     fn cmp(&self, other: &Self) -> Ordering {
         // Inverte para que o MENOR custo fique no topo
-        other.f_score.partial_cmp(&self.f_score).unwrap_or(Ordering::Equal)
+        other
+            .f_score
+            .partial_cmp(&self.f_score)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -67,7 +70,7 @@ impl Graph {
         let n2 = &self.nodes[&b];
         let dx = n1.x - n2.x;
         let dy = n1.y - n2.y;
-        (dx*dx + dy*dy).sqrt()
+        (dx * dx + dy * dy).sqrt()
     }
 
     fn dist(&self, a: u64, b: u64) -> f32 {
@@ -92,7 +95,11 @@ impl Graph {
             node_id: start,
         });
 
-        while let Some(State { f_score: _, node_id: current }) = open_set.pop() {
+        while let Some(State {
+            f_score: _,
+            node_id: current,
+        }) = open_set.pop()
+        {
             if current == goal {
                 // Reconstruir Caminho
                 let mut path = Vec::new();
@@ -110,7 +117,7 @@ impl Graph {
             if let Some(node) = self.nodes.get(&current) {
                 for &neighbor in &node.edges {
                     let tentative_g = g_score[&current] + self.dist(current, neighbor);
-                    
+
                     if tentative_g < *g_score.get(&neighbor).unwrap_or(&f32::INFINITY) {
                         came_from.insert(neighbor, current);
                         g_score.insert(neighbor, tentative_g);

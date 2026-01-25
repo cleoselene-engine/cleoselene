@@ -1,7 +1,8 @@
 use bytes::{BufMut, Bytes, BytesMut};
-use mlua::{Lua, Function, LuaSerdeExt, StdLib, LuaOptions, UserData, AnyUserData};
-use std::sync::{Arc, Mutex};
+#[cfg(feature = "lua")]
+use mlua::{AnyUserData, Function, Lua, LuaOptions, LuaSerdeExt, StdLib, UserData};
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 
 mod spatial_db;
 use spatial_db::SpatialDb;
@@ -9,6 +10,7 @@ mod physics;
 use physics::PhysicsWorld;
 mod graph_nav;
 use graph_nav::Graph;
+pub mod transformer;
 
 // OpCodes
 const OP_CLEAR: u8 = 0x01;
@@ -22,6 +24,7 @@ const OP_STOP_SOUND: u8 = 0x08;
 const OP_SET_VOLUME: u8 = 0x09;
 const OP_LOAD_IMAGE: u8 = 0x0A;
 const OP_DRAW_IMAGE: u8 = 0x0B;
+const OP_FILL_POLY: u8 = 0x0C;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum GameMode {
@@ -30,20 +33,28 @@ enum GameMode {
 }
 
 // Wrapper for SpatialDb to be exposed as UserData
+#[cfg(feature = "lua")]
 #[derive(Clone)]
 struct SpatialDbWrapper(Arc<Mutex<SpatialDb>>);
 
+#[cfg(feature = "lua")]
 impl UserData for SpatialDbWrapper {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_method("add_circle", |_, this, (x, y, r, tag): (f32, f32, f32, String)| {
-            let mut db = this.0.lock().unwrap();
-            Ok(db.add_circle(x, y, r, &tag))
-        });
+        methods.add_method(
+            "add_circle",
+            |_, this, (x, y, r, tag): (f32, f32, f32, String)| {
+                let mut db = this.0.lock().unwrap();
+                Ok(db.add_circle(x, y, r, &tag))
+            },
+        );
 
-        methods.add_method("add_segment", |_, this, (x1, y1, x2, y2, tag): (f32, f32, f32, f32, String)| {
-            let mut db = this.0.lock().unwrap();
-            Ok(db.add_segment(x1, y1, x2, y2, &tag))
-        });
+        methods.add_method(
+            "add_segment",
+            |_, this, (x1, y1, x2, y2, tag): (f32, f32, f32, f32, String)| {
+                let mut db = this.0.lock().unwrap();
+                Ok(db.add_segment(x1, y1, x2, y2, &tag))
+            },
+        );
 
         methods.add_method("update", |_, this, (id, x, y): (u64, f32, f32)| {
             let mut db = this.0.lock().unwrap();
@@ -56,7 +67,7 @@ impl UserData for SpatialDbWrapper {
             let pos = db.get_position(id);
             match pos {
                 Some((x, y)) => Ok((Some(x), Some(y))),
-                None => Ok((None, None))
+                None => Ok((None, None)),
             }
         });
 
@@ -66,11 +77,14 @@ impl UserData for SpatialDbWrapper {
             Ok(())
         });
 
-        methods.add_method("query_range", |_, this, (x, y, r, tag_filter): (f32, f32, f32, Option<String>)| {
-            let db = this.0.lock().unwrap();
-            let ids = db.query_range(x, y, r, tag_filter.as_deref());
-            Ok(ids)
-        });
+        methods.add_method(
+            "query_range",
+            |_, this, (x, y, r, tag_filter): (f32, f32, f32, Option<String>)| {
+                let db = this.0.lock().unwrap();
+                let ids = db.query_range(x, y, r, tag_filter.as_deref());
+                Ok(ids)
+            },
+        );
 
         methods.add_method("query_rect", |_, this, (min_x, min_y, max_x, max_y, tag_filter): (f32, f32, f32, f32, Option<String>)| {
             let db = this.0.lock().unwrap();
@@ -78,28 +92,52 @@ impl UserData for SpatialDbWrapper {
             Ok(ids)
         });
 
-        methods.add_method("cast_ray", |_, this, (x, y, angle, dist, tag_filter): (f32, f32, f32, f32, Option<String>)| {
-            let db = this.0.lock().unwrap();
-            let res = db.cast_ray(x, y, angle, dist, tag_filter.as_deref());
-            match res {
-                Some((id, dist_fac, hx, hy)) => Ok((Some(id), Some(dist_fac), Some(hx), Some(hy))),
-                None => Ok((None, None, None, None))
-            }
-        });
+        methods.add_method(
+            "cast_ray",
+            |_, this, (x, y, angle, dist, tag_filter): (f32, f32, f32, f32, Option<String>)| {
+                let db = this.0.lock().unwrap();
+                let res = db.cast_ray(x, y, angle, dist, tag_filter.as_deref());
+                match res {
+                    Some((id, dist_fac, hx, hy)) => {
+                        Ok((Some(id), Some(dist_fac), Some(hx), Some(hy)))
+                    }
+                    None => Ok((None, None, None, None)),
+                }
+            },
+        );
+
+        methods.add_method(
+            "compute_visibility",
+            |_, this, (origin_x, origin_y, radius, tag_filter): (f32, f32, f32, Option<String>)| {
+                let db = this.0.lock().unwrap();
+                let polygon =
+                    db.compute_visibility(origin_x, origin_y, radius, tag_filter.as_deref());
+
+                // Convert Vec<(f32, f32)> to Vec<f32> flattened [x1, y1, x2, y2, ...]
+                let mut flat = Vec::with_capacity(polygon.len() * 2);
+                for (x, y) in polygon {
+                    flat.push(x);
+                    flat.push(y);
+                }
+                Ok(flat)
+            },
+        );
     }
 }
 
 // Wrapper for PhysicsWorld
+#[cfg(feature = "lua")]
 #[derive(Clone)]
 struct PhysicsWrapper(Arc<Mutex<PhysicsWorld>>);
 
+#[cfg(feature = "lua")]
 impl UserData for PhysicsWrapper {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("add_body", |_, this, (id, props): (u64, mlua::Table)| {
             let mass: f32 = props.get("mass").unwrap_or(1.0);
             let restitution: f32 = props.get("restitution").unwrap_or(0.5);
             let drag: f32 = props.get("drag").unwrap_or(0.0);
-            
+
             let mut phys = this.0.lock().unwrap();
             phys.add_body(id, mass, restitution, drag);
             Ok(())
@@ -116,13 +154,13 @@ impl UserData for PhysicsWrapper {
             phys.set_velocity(id, vx, vy);
             Ok(())
         });
-        
+
         methods.add_method("get_velocity", |_, this, id: u64| {
             let phys = this.0.lock().unwrap();
             let v = phys.get_velocity(id);
             match v {
                 Some((vx, vy)) => Ok((Some(vx), Some(vy))),
-                None => Ok((None, None))
+                None => Ok((None, None)),
             }
         });
 
@@ -142,9 +180,11 @@ impl UserData for PhysicsWrapper {
 }
 
 // Wrapper for Graph
+#[cfg(feature = "lua")]
 #[derive(Clone)]
 struct GraphWrapper(Arc<Mutex<Graph>>);
 
+#[cfg(feature = "lua")]
 impl UserData for GraphWrapper {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("add_node", |_, this, (id, x, y): (u64, f32, f32)| {
@@ -240,7 +280,7 @@ impl CommandBuffer {
     fn cmd_load_sound(&self, name: &str, url: &str) {
         let mut data = self.data.lock().unwrap();
         data.put_u8(OP_LOAD_SOUND);
-        
+
         let name_bytes = name.as_bytes();
         data.put_u16_le(name_bytes.len() as u16);
         data.put_slice(name_bytes);
@@ -253,11 +293,11 @@ impl CommandBuffer {
     fn cmd_play_sound(&self, name: &str, loop_sound: bool, volume: f32) {
         let mut data = self.data.lock().unwrap();
         data.put_u8(OP_PLAY_SOUND);
-        
+
         let name_bytes = name.as_bytes();
         data.put_u16_le(name_bytes.len() as u16);
         data.put_slice(name_bytes);
-        
+
         data.put_u8(if loop_sound { 1 } else { 0 });
         data.put_f32_le(volume);
     }
@@ -282,7 +322,7 @@ impl CommandBuffer {
     fn cmd_load_image(&self, name: &str, url: &str) {
         let mut data = self.data.lock().unwrap();
         data.put_u8(OP_LOAD_IMAGE);
-        
+
         let name_bytes = name.as_bytes();
         data.put_u16_le(name_bytes.len() as u16);
         data.put_slice(name_bytes);
@@ -292,14 +332,28 @@ impl CommandBuffer {
         data.put_slice(url_bytes);
     }
 
-    fn cmd_draw_image(&self, name: &str, x: f32, y: f32, w: Option<f32>, h: Option<f32>, sx: Option<f32>, sy: Option<f32>, sw: Option<f32>, sh: Option<f32>, r: Option<f32>, ox: Option<f32>, oy: Option<f32>) {
+    fn cmd_draw_image(
+        &self,
+        name: &str,
+        x: f32,
+        y: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+        sx: Option<f32>,
+        sy: Option<f32>,
+        sw: Option<f32>,
+        sh: Option<f32>,
+        r: Option<f32>,
+        ox: Option<f32>,
+        oy: Option<f32>,
+    ) {
         let mut data = self.data.lock().unwrap();
         data.put_u8(OP_DRAW_IMAGE);
-        
+
         let name_bytes = name.as_bytes();
         data.put_u16_le(name_bytes.len() as u16);
         data.put_slice(name_bytes);
-        
+
         // Dest Rect
         data.put_f32_le(x);
         data.put_f32_le(y);
@@ -311,11 +365,21 @@ impl CommandBuffer {
         data.put_f32_le(sy.unwrap_or(0.0));
         data.put_f32_le(sw.unwrap_or(-1.0)); // -1.0 means full width
         data.put_f32_le(sh.unwrap_or(-1.0));
-        
+
         // Rotation & Origin (Optional)
         data.put_f32_le(r.unwrap_or(0.0));
         data.put_f32_le(ox.unwrap_or(0.0)); // Origin X relative to Dest X (0.0 = top-left, 0.5 = center of w)
         data.put_f32_le(oy.unwrap_or(0.0));
+    }
+
+    fn cmd_fill_poly(&self, points: &[(f32, f32)]) {
+        let mut data = self.data.lock().unwrap();
+        data.put_u8(OP_FILL_POLY);
+        data.put_u16_le(points.len() as u16);
+        for (x, y) in points {
+            data.put_f32_le(*x);
+            data.put_f32_le(*y);
+        }
     }
 
     pub fn append(&self, other: &CommandBuffer) {
@@ -325,6 +389,7 @@ impl CommandBuffer {
     }
 }
 
+#[cfg(feature = "lua")]
 pub struct GameState {
     lua: Lua,
     command_buffer: CommandBuffer,
@@ -332,13 +397,22 @@ pub struct GameState {
     current_mode: Arc<Mutex<GameMode>>,
 }
 
+#[cfg(feature = "lua")]
 impl GameState {
-    pub fn new(script_content: &str, script_path: Option<&std::path::Path>) -> anyhow::Result<Self> {
+    pub fn new(
+        script_content: &str,
+        script_path: Option<&std::path::Path>,
+    ) -> anyhow::Result<Self> {
         // SANDBOX SECURITY:
         // 1. Only load safe standard libraries. NO IO, NO OS, NO DEBUG.
-        let libs = StdLib::MATH | StdLib::TABLE | StdLib::STRING | StdLib::UTF8 | StdLib::COROUTINE | StdLib::PACKAGE;
+        let libs = StdLib::MATH
+            | StdLib::TABLE
+            | StdLib::STRING
+            | StdLib::UTF8
+            | StdLib::COROUTINE
+            | StdLib::PACKAGE;
         let lua = Lua::new_with(libs, LuaOptions::default())?;
-        
+
         // 2. Set Memory Limit (128 MB) to prevent RAM exhaustion DoS
         lua.set_memory_limit(128 * 1024 * 1024)?;
 
@@ -347,7 +421,7 @@ impl GameState {
         {
             let globals = lua.globals();
             let package: mlua::Table = globals.get("package")?;
-            
+
             let mut path_str = "./?.lua".to_string();
             if let Some(p) = script_path {
                 if let Some(parent) = p.parent() {
@@ -364,117 +438,194 @@ impl GameState {
         let command_buffer = CommandBuffer::new();
         let event_buffer = CommandBuffer::new();
         let current_mode = Arc::new(Mutex::new(GameMode::Update));
-        
+
         // Expose API to Lua
         {
             let globals = lua.globals();
             let api = lua.create_table()?;
-            
-            let buf_clone = command_buffer.clone();
-            api.set("clear_screen", lua.create_function(move |_, (r, g, b): (u8, u8, u8)| {
-                buf_clone.cmd_clear_screen(r, g, b);
-                Ok(())
-            })?)?;
 
             let buf_clone = command_buffer.clone();
-            api.set("set_color", lua.create_function(move |_, (r, g, b, a): (u8, u8, u8, Option<u8>)| {
-                buf_clone.cmd_set_color(r, g, b, a.unwrap_or(255));
-                Ok(())
-            })?)?;
+            api.set(
+                "clear_screen",
+                lua.create_function(move |_, (r, g, b): (u8, u8, u8)| {
+                    buf_clone.cmd_clear_screen(r, g, b);
+                    Ok(())
+                })?,
+            )?;
 
             let buf_clone = command_buffer.clone();
-            api.set("fill_rect", lua.create_function(move |_, (x, y, w, h): (f32, f32, f32, f32)| {
-                buf_clone.cmd_fill_rect(x, y, w, h);
-                Ok(())
-            })?)?;
+            api.set(
+                "set_color",
+                lua.create_function(move |_, (r, g, b, a): (u8, u8, u8, Option<u8>)| {
+                    buf_clone.cmd_set_color(r, g, b, a.unwrap_or(255));
+                    Ok(())
+                })?,
+            )?;
 
             let buf_clone = command_buffer.clone();
-            api.set("draw_line", lua.create_function(move |_, (x1, y1, x2, y2, w): (f32, f32, f32, f32, Option<f32>)| {
-                buf_clone.cmd_draw_line(x1, y1, x2, y2, w.unwrap_or(1.0));
-                Ok(())
-            })?)?;
+            api.set(
+                "fill_rect",
+                lua.create_function(move |_, (x, y, w, h): (f32, f32, f32, f32)| {
+                    buf_clone.cmd_fill_rect(x, y, w, h);
+                    Ok(())
+                })?,
+            )?;
 
             let buf_clone = command_buffer.clone();
-            api.set("draw_text", lua.create_function(move |_, (text, x, y): (String, f32, f32)| {
-                buf_clone.cmd_draw_text(&text, x, y);
-                Ok(())
-            })?)?;
+            api.set(
+                "draw_line",
+                lua.create_function(
+                    move |_, (x1, y1, x2, y2, w): (f32, f32, f32, f32, Option<f32>)| {
+                        buf_clone.cmd_draw_line(x1, y1, x2, y2, w.unwrap_or(1.0));
+                        Ok(())
+                    },
+                )?,
+            )?;
 
             let buf_clone = command_buffer.clone();
-            api.set("load_sound", lua.create_function(move |_, (name, url): (String, String)| {
-                buf_clone.cmd_load_sound(&name, &url);
-                Ok(())
-            })?)?;
+            api.set(
+                "draw_text",
+                lua.create_function(move |_, (text, x, y): (String, f32, f32)| {
+                    buf_clone.cmd_draw_text(&text, x, y);
+                    Ok(())
+                })?,
+            )?;
+
+            let buf_clone = command_buffer.clone();
+            api.set(
+                "load_sound",
+                lua.create_function(move |_, (name, url): (String, String)| {
+                    buf_clone.cmd_load_sound(&name, &url);
+                    Ok(())
+                })?,
+            )?;
 
             // Context-Aware Play Sound
             let event_buf = event_buffer.clone();
             let cmd_buf = command_buffer.clone();
             let mode_ref = current_mode.clone();
-            
-            api.set("play_sound", lua.create_function(move |_, (name, loop_val, volume): (String, Option<bool>, Option<f32>)| {
-                let mode = *mode_ref.lock().unwrap();
-                let vol = volume.unwrap_or(1.0);
-                let lp = loop_val.unwrap_or(false);
-                
-                match mode {
-                    GameMode::Update => event_buf.cmd_play_sound(&name, lp, vol),
-                    GameMode::Draw => cmd_buf.cmd_play_sound(&name, lp, vol),
-                }
-                Ok(())
-            })?)?;
+
+            api.set(
+                "play_sound",
+                lua.create_function(
+                    move |_, (name, loop_val, volume): (String, Option<bool>, Option<f32>)| {
+                        let mode = *mode_ref.lock().unwrap();
+                        let vol = volume.unwrap_or(1.0);
+                        let lp = loop_val.unwrap_or(false);
+
+                        match mode {
+                            GameMode::Update => event_buf.cmd_play_sound(&name, lp, vol),
+                            GameMode::Draw => cmd_buf.cmd_play_sound(&name, lp, vol),
+                        }
+                        Ok(())
+                    },
+                )?,
+            )?;
 
             let event_buf = event_buffer.clone();
             let cmd_buf = command_buffer.clone();
             let mode_ref = current_mode.clone();
-            api.set("stop_sound", lua.create_function(move |_, name: String| {
-                let mode = *mode_ref.lock().unwrap();
-                match mode {
-                    GameMode::Update => event_buf.cmd_stop_sound(&name),
-                    GameMode::Draw => cmd_buf.cmd_stop_sound(&name),
-                }
-                Ok(())
-            })?)?;
+            api.set(
+                "stop_sound",
+                lua.create_function(move |_, name: String| {
+                    let mode = *mode_ref.lock().unwrap();
+                    match mode {
+                        GameMode::Update => event_buf.cmd_stop_sound(&name),
+                        GameMode::Draw => cmd_buf.cmd_stop_sound(&name),
+                    }
+                    Ok(())
+                })?,
+            )?;
 
             let event_buf = event_buffer.clone();
             let cmd_buf = command_buffer.clone();
             let mode_ref = current_mode.clone();
-            api.set("set_volume", lua.create_function(move |_, (name, vol): (String, f32)| {
-                let mode = *mode_ref.lock().unwrap();
-                match mode {
-                    GameMode::Update => event_buf.cmd_set_volume(&name, vol),
-                    GameMode::Draw => cmd_buf.cmd_set_volume(&name, vol),
-                }
-                Ok(())
-            })?)?;
+            api.set(
+                "set_volume",
+                lua.create_function(move |_, (name, vol): (String, f32)| {
+                    let mode = *mode_ref.lock().unwrap();
+                    match mode {
+                        GameMode::Update => event_buf.cmd_set_volume(&name, vol),
+                        GameMode::Draw => cmd_buf.cmd_set_volume(&name, vol),
+                    }
+                    Ok(())
+                })?,
+            )?;
 
             let buf_clone = command_buffer.clone();
-            api.set("load_image", lua.create_function(move |_, (name, url): (String, String)| {
-                buf_clone.cmd_load_image(&name, &url);
-                Ok(())
-            })?)?;
+            api.set(
+                "load_image",
+                lua.create_function(move |_, (name, url): (String, String)| {
+                    buf_clone.cmd_load_image(&name, &url);
+                    Ok(())
+                })?,
+            )?;
 
             let buf_clone = command_buffer.clone();
             // api.draw_image(name, x, y, [w, h, sx, sy, sw, sh, r, ox, oy])
-            api.set("draw_image", lua.create_function(move |_, (name, x, y, w, h, sx, sy, sw, sh, r, ox, oy): (String, f32, f32, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>, Option<f32>)| {
-                buf_clone.cmd_draw_image(&name, x, y, w, h, sx, sy, sw, sh, r, ox, oy);
-                Ok(())
-            })?)?;
+            api.set(
+                "draw_image",
+                lua.create_function(
+                    move |_,
+                          (name, x, y, w, h, sx, sy, sw, sh, r, ox, oy): (
+                        String,
+                        f32,
+                        f32,
+                        Option<f32>,
+                        Option<f32>,
+                        Option<f32>,
+                        Option<f32>,
+                        Option<f32>,
+                        Option<f32>,
+                        Option<f32>,
+                        Option<f32>,
+                        Option<f32>,
+                    )| {
+                        buf_clone.cmd_draw_image(&name, x, y, w, h, sx, sy, sw, sh, r, ox, oy);
+                        Ok(())
+                    },
+                )?,
+            )?;
 
-            api.set("new_spatial_db", lua.create_function(move |_, cell_size: f32| {
-                let db = SpatialDb::new(cell_size);
-                Ok(SpatialDbWrapper(Arc::new(Mutex::new(db))))
-            })?)?;
+            let buf_clone = command_buffer.clone();
+            api.set(
+                "fill_poly",
+                lua.create_function(move |_, points: Vec<f32>| {
+                    if points.len() % 2 == 0 {
+                        let mut pts = Vec::with_capacity(points.len() / 2);
+                        for i in (0..points.len()).step_by(2) {
+                            pts.push((points[i], points[i + 1]));
+                        }
+                        buf_clone.cmd_fill_poly(&pts);
+                    }
+                    Ok(())
+                })?,
+            )?;
 
-            api.set("new_physics_world", lua.create_function(move |_, userdata: AnyUserData| {
-                let db_wrapper = userdata.borrow::<SpatialDbWrapper>()?;
-                let phys = PhysicsWorld::new(db_wrapper.0.clone());
-                Ok(PhysicsWrapper(Arc::new(Mutex::new(phys))))
-            })?)?;
+            api.set(
+                "new_spatial_db",
+                lua.create_function(move |_, cell_size: f32| {
+                    let db = SpatialDb::new(cell_size);
+                    Ok(SpatialDbWrapper(Arc::new(Mutex::new(db))))
+                })?,
+            )?;
 
-            api.set("new_graph", lua.create_function(move |_, ()| {
-                let graph = Graph::new();
-                Ok(GraphWrapper(Arc::new(Mutex::new(graph))))
-            })?)?;
+            api.set(
+                "new_physics_world",
+                lua.create_function(move |_, userdata: AnyUserData| {
+                    let db_wrapper = userdata.borrow::<SpatialDbWrapper>()?;
+                    let phys = PhysicsWorld::new(db_wrapper.0.clone());
+                    Ok(PhysicsWrapper(Arc::new(Mutex::new(phys))))
+                })?,
+            )?;
+
+            api.set(
+                "new_graph",
+                lua.create_function(move |_, ()| {
+                    let graph = Graph::new();
+                    Ok(GraphWrapper(Arc::new(Mutex::new(graph))))
+                })?,
+            )?;
 
             globals.set("api", api)?;
 
@@ -511,10 +662,10 @@ impl GameState {
     // Now accepts session_id so Lua knows WHO to draw for
     pub fn draw(&self, session_id: &str) -> anyhow::Result<Bytes> {
         *self.current_mode.lock().unwrap() = GameMode::Draw;
-        
+
         // Clear previous buffer
         self.command_buffer.clear();
-        
+
         // Include events from update (sounds)
         self.command_buffer.append(&self.event_buffer);
 
@@ -522,16 +673,21 @@ impl GameState {
         if let Ok(draw) = globals.get::<_, Function>("draw") {
             draw.call::<_, ()>(session_id)?;
         }
-        
+
         Ok(self.command_buffer.get_bytes())
     }
-    
-    pub fn handle_input(&self, session_id: &str, input_code: u8, active: bool) -> anyhow::Result<()> {
-         let globals = self.lua.globals();
-         if let Ok(on_input) = globals.get::<_, Function>("on_input") {
-             on_input.call::<_, ()>((session_id, input_code, active))?;
-         }
-         Ok(())
+
+    pub fn handle_input(
+        &self,
+        session_id: &str,
+        input_code: u8,
+        active: bool,
+    ) -> anyhow::Result<()> {
+        let globals = self.lua.globals();
+        if let Ok(on_input) = globals.get::<_, Function>("on_input") {
+            on_input.call::<_, ()>((session_id, input_code, active))?;
+        }
+        Ok(())
     }
 
     pub fn on_connect(&self, session_id: &str) -> anyhow::Result<Bytes> {
@@ -555,7 +711,7 @@ impl GameState {
 
     pub fn snapshot_state(&self) -> anyhow::Result<String> {
         let globals = self.lua.globals();
-        
+
         // Get as generic Lua Value first
         let players_lua: mlua::Value = globals.get("players")?;
         let asteroids_lua: mlua::Value = globals.get("asteroids")?;
