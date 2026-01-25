@@ -5,6 +5,7 @@ local Utils = require("utils")
 local M = {}
 local sqrt = math.sqrt
 local min, max, floor = math.min, math.max, math.floor
+local abs = math.abs
 local cos, sin = math.cos, math.sin
 local pi = math.pi
 local pi2 = pi * 2
@@ -73,6 +74,58 @@ local function draw_player(p, tx_fn, ty_fn)
             api.set_color(Config.COLORS[i][1], Config.COLORS[i][2], Config.COLORS[i][3])
             api.fill_rect(tx_fn(dpx)-15+i*6, ty_fn(dpy)+20, 4, 4) 
         end 
+    end
+end
+
+-- Helper for software rasterization of shadows (if API lacks fill_polygon)
+local function fill_triangle_scanline(x1, y1, x2, y2, x3, y3)
+    -- Sort vertices by Y
+    if y1 > y2 then x1,x2=x2,x1; y1,y2=y2,y1 end
+    if y1 > y3 then x1,x3=x3,x1; y1,y3=y3,y1 end
+    if y2 > y3 then x2,x3=x3,x2; y2,y3=y3,y2 end
+
+    local y_start = floor(y1)
+    local y_end = floor(y3)
+    
+    -- Clipping Y
+    if y_end < 0 or y_start > Config.VIEW_H then return end
+    y_start = max(0, y_start)
+    y_end = min(Config.VIEW_H, y_end)
+
+    -- Slope calculation helpers
+    local dx12 = 0; if y2-y1 ~= 0 then dx12 = (x2-x1)/(y2-y1) end
+    local dx13 = 0; if y3-y1 ~= 0 then dx13 = (x3-x1)/(y3-y1) end
+    local dx23 = 0; if y3-y2 ~= 0 then dx23 = (x3-x2)/(y3-y2) end
+    
+    local wx1 = x1
+    local wx2 = x1
+    
+    -- Special case for flat top handled naturally?
+    -- Rasterize
+    for y = y_start, y_end do
+        local xa, xb
+        if y < y2 then
+            -- Top half (y1 to y2)
+            xa = x1 + (y - y1) * dx12
+            xb = x1 + (y - y1) * dx13
+        else
+            -- Bottom half (y2 to y3)
+            xa = x2 + (y - y2) * dx23
+            xb = x1 + (y - y1) * dx13
+        end
+        
+        if xa > xb then xa, xb = xb, xa end
+        -- Draw horizontal span
+        api.fill_rect(xa, y, max(1, xb - xa + 1), 1)
+    end
+end
+
+local function fill_quad(x1, y1, x2, y2, x3, y3, x4, y4)
+    if api.fill_polygon then
+         api.fill_polygon(x1, y1, x2, y2, x3, y3, x4, y4)
+    else
+         fill_triangle_scanline(x1, y1, x2, y2, x3, y3)
+         fill_triangle_scanline(x1, y1, x3, y3, x4, y4)
     end
 end
 
@@ -197,17 +250,9 @@ function M.draw(session_id)
         table.insert(queries, {l=wx.l, t=wy.t, r=wx.r, b=wy.b})
     end
 
-    -- SHADOW CASTING (Fog of War)
-    local cx, cy = Config.VIEW_W/2, Config.VIEW_H/2
-    local segments = {}
-    local wall_ids = {}
-    
-    -- Add Screen Borders as Segments (to catch rays)
-    
+    -- Collect Visible Objects
+    local visible_objs = {}
     local drawn_ids = {}
-    
-    -- EXPLICITLY DRAW ME (THE PLAYER) FIRST OR LAST TO ENSURE VISIBILITY
-    -- We draw me last (on top of map)
     
     for _, q in ipairs(queries) do
         local visible_ids = State.db:query_rect(q.l, q.t, q.r, q.b, nil)
@@ -215,51 +260,12 @@ function M.draw(session_id)
             if not drawn_ids[id] then
                 drawn_ids[id] = true
                 local obj = State.entity_map[id]
-                if obj and obj ~= me then -- Skip me here, draw later
-                    if obj.type == "wall" or obj.type == "door" then
-                        if not obj.open then 
-                            if obj.type == "door" then 
-                                local c = Config.COLORS[obj.color_id]
-                                api.set_color(c[1], c[2], c[3]) 
-                            else 
-                                api.set_color(120, 120, 150) 
-                            end
-                            api.draw_line(tx(obj.x1), ty(obj.y1), tx(obj.x2), ty(obj.y2), 1) 
-                        end
-                    elseif obj.active and not obj.inputs then -- Enemy
-                        local ex, ey = obj.x, obj.y
-                        if obj.shake_timer and obj.shake_timer > 0 then
-                            ex = ex + (math.random() - 0.5) * 6
-                            ey = ey + (math.random() - 0.5) * 6
-                        end
-
-                        if obj.owner_p then 
-                            api.set_color(obj.color.r, obj.color.g, obj.color.b) 
-                        else 
-                            api.set_color(255, 0, 0) 
-                        end
-                        
-                        local visual_r = 15 -- Keep visuals small
-                        local pts = (obj.points or 5) * 2
-                        local inner_r = visual_r * 0.4
-                        local outer_r = visual_r
-                        local lx, ly
-                        
-                        for i=0, pts do 
-                            local a = (i/pts)*pi2+(obj.spin or 0)
-                            local r = (i%2==0) and outer_r or inner_r
-                            local px, py = ex + cos(a)*r, ey + sin(a)*r
-                            if i > 0 then api.draw_line(tx(lx), ty(ly), tx(px), ty(py), 2) end
-                            lx, ly = px, py 
-                        end
-                    elseif obj.inputs then -- Other Player
-                        draw_player(obj, tx, ty)
-                    end
-                end
+                if obj then table.insert(visible_objs, obj) end
             end
         end
     end
 
+    -- 1. Draw Lower Layer (Items, Debris)
     -- Draw Items
     for _, it in ipairs(State.items) do if not it.taken then
         local c = Config.ITEMS[it.type]
@@ -282,19 +288,12 @@ function M.draw(session_id)
     
     api.set_color(80, 80, 80)
     for _, a in ipairs(State.asteroids) do 
-        -- Optimization: Only draw asteroid if roughly on screen (using new tx/ty)
         local sx, sy = tx(a.x), ty(a.y)
         if sx > -100 and sx < Config.VIEW_W + 100 and sy > -100 and sy < Config.VIEW_H + 100 then
             api.fill_rect(sx-a.radius, sy-a.radius, a.radius*2, a.radius*2) 
         end
     end
-    
-    for _, s in ipairs(State.shots) do 
-        local p = 1.0 - (s.life / 0.5)
-        api.set_color(255, 255, 0, max(0, min(255, floor(255 * (1.0 - p)))))
-        api.draw_line(tx(s.x1), ty(s.y1), tx(s.x2), ty(s.y2), 1 + p * 8) 
-    end
-    
+
     for _, s in ipairs(State.shards) do 
         local a = floor(255*(s.life/s.max_life))
         if s.color then api.set_color(s.color.r, s.color.g, s.color.b, a) else api.set_color(255, 100, 0, a) end
@@ -305,35 +304,39 @@ function M.draw(session_id)
         local y2 = s.x2*sn + s.y2*c + s.cy
         api.draw_line(tx(x1), ty(y1), tx(x2), ty(y2), 2) 
     end
-    
-    for _, pt in ipairs(State.particles) do 
-        local p = 1.0 - (pt.life/pt.max_life)
-        
-        if pt.type == "ship_echo" then
-            local scale = 1.0 + p * 2.0 -- Expands from 1x to 3x
-            local alpha = max(0, min(255, floor(255 * (1.0 - p))))
-            api.set_color(pt.color.r, pt.color.g, pt.color.b, alpha)
-            
-            local rad = pt.angle * (pi/180)
-            local c, s = cos(rad), sin(rad)
-            -- Ship geometry scaled
-            local xA, yA = 14*c*scale, 14*s*scale
-            local xB, yB = (-10*c+7*s)*scale, (-10*s-7*c)*scale
-            local xC, yC = (-10*c-7*s)*scale, (-10*s+7*c)*scale
-            
-            api.draw_line(tx(pt.x+xA), ty(pt.y+yA), tx(pt.x+xB), ty(pt.y+yB), 2)
-            api.draw_line(tx(pt.x+xB), ty(pt.y+yB), tx(pt.x+xC), ty(pt.y+yC), 2)
-            api.draw_line(tx(pt.x+xC), ty(pt.y+yC), tx(pt.x+xA), ty(pt.y+yA), 2)
-        else
-            -- Default Spark Particle
-            local g = max(0, min(255, floor(255*(1.0-p*0.6))))
-            local a = max(0, min(255, floor(200*(1.0-p))))
-            api.set_color(255, g, 0, a)
-            local rad = pt.angle * (pi/180)
-            local c, s = cos(rad), sin(rad)
-            local px, py = -s, c
-            local w = 12 * (pt.size_factor or 1.0)
-            api.draw_line(tx(pt.x-px*w), ty(pt.y-py*w), tx(pt.x+px*w), ty(pt.y+py*w), 2) 
+
+    -- 2. Draw Active Objects (Enemies, Players) - BEFORE Shadows
+    for _, obj in ipairs(visible_objs) do
+        if obj ~= me then -- Skip me
+            if obj.active and not obj.inputs and obj.type ~= "wall" and obj.type ~= "door" then -- Enemy
+                local ex, ey = obj.x, obj.y
+                if obj.shake_timer and obj.shake_timer > 0 then
+                    ex = ex + (math.random() - 0.5) * 6
+                    ey = ey + (math.random() - 0.5) * 6
+                end
+
+                if obj.owner_p then 
+                    api.set_color(obj.color.r, obj.color.g, obj.color.b) 
+                else 
+                    api.set_color(255, 0, 0) 
+                end
+                
+                local visual_r = 15
+                local pts = (obj.points or 5) * 2
+                local inner_r = visual_r * 0.4
+                local outer_r = visual_r
+                local lx, ly
+                
+                for i=0, pts do 
+                    local a = (i/pts)*pi2+(obj.spin or 0)
+                    local r = (i%2==0) and outer_r or inner_r
+                    local px, py = ex + cos(a)*r, ey + sin(a)*r
+                    if i > 0 then api.draw_line(tx(lx), ty(ly), tx(px), ty(py), 2) end
+                    lx, ly = px, py 
+                end
+            elseif obj.inputs then -- Other Player
+                draw_player(obj, tx, ty)
+            end
         end
     end
     
@@ -366,8 +369,104 @@ function M.draw(session_id)
             lx, ly = px, py 
         end 
     end
+
+    -- 3. Draw Shadows (OVERLAPPING Enemies/Items)
+    local cx, cy = Config.VIEW_W/2, Config.VIEW_H/2
+    api.set_color(0, 0, 0)
     
-    -- DRAW ME EXPLICITLY
+    -- Function to calculate extension to screen edge
+    local function get_extension_len(px, py, dx, dy)
+        if abs(dx) < 0.001 and abs(dy) < 0.001 then return 2000 end
+        local tx, ty = 10000, 10000
+        if dx > 0.001 then tx = (Config.VIEW_W + 200 - px) / dx 
+        elseif dx < -0.001 then tx = (-200 - px) / dx end
+        
+        if dy > 0.001 then ty = (Config.VIEW_H + 200 - py) / dy
+        elseif dy < -0.001 then ty = (-200 - py) / dy end
+        
+        local t = min(tx, ty)
+        if t < 0 then t = 2000 end
+        return t + 2000
+    end
+    
+    for _, obj in ipairs(visible_objs) do
+        if (obj.type == "wall" or obj.type == "door") and not obj.open then
+             local sx1, sy1 = tx(obj.x1), ty(obj.y1)
+             local sx2, sy2 = tx(obj.x2), ty(obj.y2)
+             
+             local dir1_x, dir1_y = sx1 - cx, sy1 - cy
+             local len1 = sqrt(dir1_x*dir1_x + dir1_y*dir1_y)
+             local nd1x, nd1y = 0, 0
+             if len1 > 0.001 then nd1x, nd1y = dir1_x/len1, dir1_y/len1 end
+             
+             local dir2_x, dir2_y = sx2 - cx, sy2 - cy
+             local len2 = sqrt(dir2_x*dir2_x + dir2_y*dir2_y)
+             local nd2x, nd2y = 0, 0
+             if len2 > 0.001 then nd2x, nd2y = dir2_x/len2, dir2_y/len2 end
+             
+             local ext1 = get_extension_len(sx1, sy1, nd1x, nd1y)
+             local ext2 = get_extension_len(sx2, sy2, nd2x, nd2y)
+             
+             local p3x = sx2 + nd2x * ext2
+             local p3y = sy2 + nd2y * ext2
+             local p4x = sx1 + nd1x * ext1
+             local p4y = sy1 + nd1y * ext1
+             
+             fill_quad(sx1, sy1, sx2, sy2, p3x, p3y, p4x, p4y)
+        end
+    end
+    
+    -- 4. Draw Walls (On top of shadows)
+    for _, obj in ipairs(visible_objs) do
+        if obj.type == "door" and not obj.open then
+             local c = Config.COLORS[obj.color_id]
+             api.set_color(c[1], c[2], c[3]) 
+             api.draw_line(tx(obj.x1), ty(obj.y1), tx(obj.x2), ty(obj.y2), 3) 
+        end
+    end
+
+    -- 5. Draw Particles/Shots (Glowing on top?)
+    -- Usually shots should be visible? Or hidden by walls?
+    -- Let's put shots on top for gameplay clarity, or below shadows for realism?
+    -- Realism: Below shadows.
+    -- Gameplay: Maybe top.
+    -- User asked for shadows to cover enemies. Shots are like enemies.
+    -- But shots are drawn below in this sequence? No, let's move shots to step 2/3.
+    -- Actually, let's keep shots visible on top for now as they are "light".
+    
+    for _, s in ipairs(State.shots) do 
+        local p = 1.0 - (s.life / 0.5)
+        api.set_color(255, 255, 0, max(0, min(255, floor(255 * (1.0 - p)))))
+        api.draw_line(tx(s.x1), ty(s.y1), tx(s.x2), ty(s.y2), 1 + p * 8) 
+    end
+    
+    for _, pt in ipairs(State.particles) do 
+        local p = 1.0 - (pt.life/pt.max_life)
+        if pt.type == "ship_echo" then
+            local scale = 1.0 + p * 2.0 
+            local alpha = max(0, min(255, floor(255 * (1.0 - p))))
+            api.set_color(pt.color.r, pt.color.g, pt.color.b, alpha)
+            local rad = pt.angle * (pi/180)
+            local c, s = cos(rad), sin(rad)
+            local xA, yA = 14*c*scale, 14*s*scale
+            local xB, yB = (-10*c+7*s)*scale, (-10*s-7*c)*scale
+            local xC, yC = (-10*c-7*s)*scale, (-10*s+7*c)*scale
+            api.draw_line(tx(pt.x+xA), ty(pt.y+yA), tx(pt.x+xB), ty(pt.y+yB), 2)
+            api.draw_line(tx(pt.x+xB), ty(pt.y+yB), tx(pt.x+xC), ty(pt.y+yC), 2)
+            api.draw_line(tx(pt.x+xC), ty(pt.y+yC), tx(pt.x+xA), ty(pt.y+yA), 2)
+        else
+            local g = max(0, min(255, floor(255*(1.0-p*0.6))))
+            local a = max(0, min(255, floor(200*(1.0-p))))
+            api.set_color(255, g, 0, a)
+            local rad = pt.angle * (pi/180)
+            local c, s = cos(rad), sin(rad)
+            local px, py = -s, c
+            local w = 12 * (pt.size_factor or 1.0)
+            api.draw_line(tx(pt.x-px*w), ty(pt.y-py*w), tx(pt.x+px*w), ty(pt.y+py*w), 2) 
+        end
+    end
+    
+    -- 6. Draw Me
     draw_player(me, tx, ty)
     
     -- UI
